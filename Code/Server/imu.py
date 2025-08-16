@@ -5,6 +5,8 @@ import os
 from kalman import Kalman_filter
 from mpu6050 import mpu6050
 
+
+# This class is used to calculate the IMU data (Orientation)
 class IMU:
     def __init__(self):
         self.proportional_gain = 100 
