@@ -76,7 +76,10 @@ class Control:
         self.leg_positions = [[140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0]]
         self.calibration_angles = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]
         self.current_angles = [[90, 0, 0], [90, 0, 0], [90, 0, 0], [90, 0, 0], [90, 0, 0], [90, 0, 0]]
-        self.command_queue = ['', '', '', '', '', '']
+        self.command_queue = ['', '', '', '', '', ''] 
+        # from this section of code we can see the nature of the command queue 
+        # The first thing in the command queue is the type of command (str) 
+        #The following entries is the necessarry coordinates needed for the command to be executed e.g. for a position command the the indexes of 1,2,3 will be x,y,z coordinates
         
         #~self.leg_positions = [[140, 0, 0] for _ in range(6)]
         #~self.calibration_angles = [[0, 0, 0] for _ in range(6)]
@@ -349,11 +352,12 @@ class Control:
                 self.status_flag = 0x00  # Set status to relaxed
             
             # Process POSITION command (move body to specific x,y,z)
-            if cmd.CMD_POSITION in self.command_queue and len(self.command_queue) == 4:
+            if cmd.CMD_POSITION in self.command_queue and len(self.command_queue) == 4: 
+
                 if self.status_flag != 0x01:  # If not already in position mode
                     self.relax(False)  # Wake up servos
                 # Parse and restrict position values
-                x = self.restrict_value(int(self.command_queue[1]), -40, 40)
+                x = self.restrict_value(int(self.command_queue[1]), -40, 40) #Take the nescesarry information and store it in values
                 y = self.restrict_value(int(self.command_queue[2]), -40, 40)
                 z = self.restrict_value(int(self.command_queue[3]), -20, 20)
                 self.move_position(x, y, z)  # Move to new position
@@ -364,10 +368,14 @@ class Control:
             elif cmd.CMD_ATTITUDE in self.command_queue and len(self.command_queue) == 4:
                 if self.status_flag != 0x02:  # If not already in attitude mode
                     self.relax(False)  # Wake up servos
-                # Parse and restrict orientation values
+                # Parse and restrict orientation values 
+
+                #in this case the 3 nescessary variables are roll, pitch and yaw
+
                 roll = self.restrict_value(int(self.command_queue[1]), -15, 15)
                 pitch = self.restrict_value(int(self.command_queue[2]), -15, 15)
                 yaw = self.restrict_value(int(self.command_queue[3]), -15, 15)
+
                 # Calculate and apply new leg positions for desired orientation
                 points = self.calculate_posture_balance(roll, pitch, yaw)
                 self.transform_coordinates(points)
@@ -379,12 +387,12 @@ class Control:
             elif cmd.CMD_MOVE in self.command_queue and len(self.command_queue) == 6:
                 if self.command_queue[2] == "0" and self.command_queue[3] == "0":
                     # Special case: Stop movement
-                    self.run_gait(self.command_queue)
+                    self.run_gait(self.command_queue) 
                     self.command_queue = [''] * 6
                 else:
                     if self.status_flag != 0x03:  # If not already in movement mode
                         self.relax(False)  # Wake up servos
-                    self.run_gait(self.command_queue)  # Execute walking gait
+                    self.run_gait(self.command_queue)  # Execute walking gait based on commands 
                     self.status_flag = 0x03  # Set status to movement
             
             # Process BALANCE command
