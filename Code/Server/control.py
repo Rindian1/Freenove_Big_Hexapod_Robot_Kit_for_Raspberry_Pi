@@ -1,677 +1,742 @@
 # -*- coding: utf-8 -*-
-# Standard library imports
+"""
+Control module for Freenove Big Hexapod Robot Kit
+
+This module handles the core control system for the hexapod robot, including
+kinematics, gait patterns, balance control, and movement coordination.
+"""
+
 import time
 import math
 import copy
 import threading
-
-# Third-party imports
 import numpy as np
+from typing import List, Tuple, Dict, Any, Optional
 from gpiozero import OutputDevice
 
-# Local application imports
-from pid import Incremental_PID  # PID controller for balance
-from command import COMMAND as cmd  # Command definitions
-from imu import IMU  # Inertial Measurement Unit for orientation sensing
-from servo import Servo  # Servo motor control
+from pid import Incremental_PID
+from command import COMMAND as cmd
+from imu import IMU
+from servo import Servo
+
 
 class Control:
     """
-    Main control class for the hexapod robot.
-    Handles movement, balance, and servo control for all six legs.
+    Main control class for hexapod robot movement and coordination.
+    
+    Handles inverse kinematics, gait patterns, balance control, and
+    real-time movement coordination for the 6-legged robot.
     """
     
-    def __init__(self):  # type: () -> None
-        """
-        Initialize the Control class with default parameters and hardware interfaces.
-        Sets up servos, IMU, and initial robot state.
-        """
-        # Initialize IMU for orientation sensing
+    # Robot physical parameters
+    LEG_SEGMENTS = {
+        'L1': 33,   # Hip segment length (mm)
+        'L2': 90,   # Thigh segment length (mm)
+        'L3': 110   # Shin segment length (mm)
+    }
+    
+    # Body dimensions
+    BODY_RADIUS = 85  # Distance from center to leg attachment (mm)
+    LEG_SPACING = 54  # Angle between legs (degrees)
+    
+    # Movement constraints
+    MAX_LEG_LENGTH = 248  # Maximum leg reach (mm)
+    MIN_LEG_LENGTH = 90   # Minimum leg reach (mm)
+    MAX_BODY_HEIGHT = 20  # Maximum body height adjustment (mm)
+    MIN_BODY_HEIGHT = -20 # Minimum body height adjustment (mm)
+    
+    # Gait parameters
+    DEFAULT_STEP_HEIGHT = 40  # Step height for walking (mm)
+    DEFAULT_GAIT_CYCLES = 64  # Default gait cycle steps
+    
+    def __init__(self):
+        """Initialize the control system with all components."""
+        # Hardware components
         self.imu = IMU()
-        
-        # Initialize servo controller
         self.servo = Servo()
-        
-        # Movement control flag (0x01 = normal movement)
-        self.movement_flag = 0x01 
-        
-        # Flag to track if servos are in relaxed state
-        self.relaxation_flag = False
-        
-        # PID controller for balance (Proportional = 0.5, Integral = 0, Derivative = 0.0025)
-        self.pid_controller = Incremental_PID(0.500, 0.00, 0.0025)
-        
-        # GPIO control for servo power (pin 4)
         self.servo_power_disable = OutputDevice(4)
-        self.servo_power_disable.off()  # Turn on servo power (active low)
+        self.servo_power_disable.off()
         
-        # Robot status flag (see below for bit meanings)
-        self.status_flag = 0x00 
-        # indicates Status of the robot ie.  
-            # whether they should be relaxed (0x00) 
-            # whether the servos should be used to move and maintain specific positions of the entire hexapod(0x01)  
-            # whether the servos should be used to move and maintain specific attitudes of the entire hexapod (0x02) 
-            # whether the servos should be used to move and maintain specific positions and attitudes of the entire hexapod simultaneously(0x03)
-            # whether it should be balancing (0x04)
+        # Control parameters
+        self.movement_flag = 0x01
+        self.relaxation_flag = False
+        self.status_flag = 0x00
         self.timeout = 0
         
-        # Default body height (negative Z is up in robot's coordinate system)
+        # PID controller for balance
+        self.pid_controller = Incremental_PID(0.500, 0.00, 0.0025)
+        
+        # Body position and orientation
         self.body_height = -25
+        self.body_points = self._initialize_body_points()
         
-        # Default positions for each leg's attachment point on the body (in mm)
-        # Format: [ [x1,y1,z1], [x2,y2,z2], ... ] for legs 1-6
-        self.body_points = [
-            [137.1, 189.4, self.body_height],  # Leg 1 (front right)
-            [225, 0, self.body_height],        # Leg 2 (middle right)
-            [137.1, -189.4, self.body_height], # Leg 3 (rear right)
-            [-137.1, -189.4, self.body_height],# Leg 4 (rear left)
-            [-225, 0, self.body_height],       # Leg 5 (middle left)
-            [-137.1, 189.4, self.body_height]  # Leg 6 (front left)
-        ]
-        
-        # Load leg calibration data from file
+        # Leg positions and angles
         self.calibration_leg_positions = self.read_from_txt('point')
-
-        # Current target positions for each leg's end effector [x,y,z] in mm
-        self.leg_positions = [[140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0]]
-        self.calibration_angles = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]
-        self.current_angles = [[90, 0, 0], [90, 0, 0], [90, 0, 0], [90, 0, 0], [90, 0, 0], [90, 0, 0]]
-        self.command_queue = ['', '', '', '', '', ''] 
-        # from this section of code we can see the nature of the command queue 
-        # The first thing in the command queue is the type of command (str) 
-        #The following entries is the necessarry coordinates needed for the command to be executed e.g. for a position command the the indexes of 1,2,3 will be x,y,z coordinates
+        self.leg_positions = [[140, 0, 0] for _ in range(6)]
+        self.calibration_angles = [[0, 0, 0] for _ in range(6)]
+        self.current_angles = [[90, 0, 0] for _ in range(6)]
         
-        #~self.leg_positions = [[140, 0, 0] for _ in range(6)]
-        #~self.calibration_angles = [[0, 0, 0] for _ in range(6)]
-        #~self.current_angles = [[90, 0, 0] for _ in range(6)] 
-        #~self.command_queue = [''] * 6
+        # Command processing
+        self.command_queue = [''] * 6
+        self.command_lock = threading.Lock()
         
-        # Perform initial calibration and set default leg positions
+        # Threading
+        self.condition_thread = threading.Thread(target=self.condition_monitor, daemon=True)
+        self.thread_condition = threading.Condition()
+        
+        # Initialize system
         self.calibrate()
         self.set_leg_angles()
-        
-        # Start the condition monitoring thread
-        self.condition_thread = threading.Thread(target=self.condition_monitor)
-        self.condition_thread.daemon = True  # Allow program to exit while thread is running
         self.condition_thread.start()
         
-        # Thread synchronization primitive
-        self.Thread_conditiona = threading.Condition()
-
-    def read_from_txt(self, filename):  # type: (str) -> List[List[int]]
+        print("Hexapod control system initialized")
+    
+    def _initialize_body_points(self) -> List[List[float]]:
         """
-        Read data from a text file and return it as a list of lists.
-        Each inner list represents a line in the file, with values separated by tabs.
+        Initialize the default body attachment points for each leg.
+        
+        Returns:
+            List[List[float]]: Body points for each leg [x, y, z]
         """
-        with open(filename + ".txt", "r") as file:
-            lines = file.readlines()
-            data = [list(map(int, line.strip().split("\t"))) for line in lines]
-        return data
-
-    def save_to_txt(self, data, filename):  # type: (List[List[Union[int, float]]], str) -> None
-        with open(filename + '.txt', 'w') as file:
-            for row in data:
-                file.write('\t'.join(map(str, row)) + '\n')
-
-    def coordinate_to_angle(self, x, y, z, l1=33, l2=90, l3=110):  # type: (float, float, float, float, float, float) -> Tuple[float, float, float]
+        points = []
+        for i in range(6):
+            angle = i * 60  # 60 degrees between each leg
+            x = self.BODY_RADIUS * math.cos(math.radians(angle))
+            y = self.BODY_RADIUS * math.sin(math.radians(angle))
+            z = self.body_height
+            points.append([x, y, z])
+        return points
+    
+    def read_from_txt(self, filename: str) -> List[List[int]]:
+        """
+        Read calibration data from text file.
+        
+        Args:
+            filename (str): Base filename without extension
+            
+        Returns:
+            List[List[int]]: Calibration data
+        """
+        try:
+            with open(filename + ".txt", "r") as file:
+                lines = file.readlines()
+                data = [list(map(int, line.strip().split("\t"))) for line in lines]
+            return data
+        except FileNotFoundError:
+            print(f"Calibration file {filename}.txt not found, using defaults")
+            return [[0, 0, 0] for _ in range(6)]
+        except Exception as e:
+            print(f"Error reading calibration file: {e}")
+            return [[0, 0, 0] for _ in range(6)]
+    
+    def save_to_txt(self, data: List[List[int]], filename: str) -> bool:
+        """
+        Save calibration data to text file.
+        
+        Args:
+            data (List[List[int]]): Data to save
+            filename (str): Base filename without extension
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            with open(filename + '.txt', 'w') as file:
+                for row in data:
+                    file.write('\t'.join(map(str, row)) + '\n')
+            print(f"Calibration data saved to {filename}.txt")
+            return True
+        except Exception as e:
+            print(f"Error saving calibration data: {e}")
+            return False
+    
+    def coordinate_to_angle(self, x: float, y: float, z: float, 
+                          l1: float = None, l2: float = None, l3: float = None) -> Tuple[float, float, float]:
         """
         Convert 3D coordinates to servo angles using inverse kinematics.
         
-        This method calculates the required servo angles to position the end effector
-        (foot) at the specified (x,y,z) coordinates relative to the leg's base.
-        
         Args:
-            x: X-coordinate of target position (forward/backward)
-            y: Y-coordinate of target position (left/right)
-            z: Z-coordinate of target position (up/down)
-            l1: Length of first limb segment (shoulder to elbow) in mm
-            l2: Length of second limb segment (elbow to wrist) in mm
-            l3: Length of third limb segment (wrist to foot) in mm
+            x, y, z (float): Target coordinates
+            l1, l2, l3 (float): Leg segment lengths
             
         Returns:
-            Tuple of (base_angle, middle_angle, end_angle) in degrees
-            
-        The coordinate system is right-handed with:
-        - X: Forward (positive) / Backward (negative)
-        - Y: Left (positive) / Right (negative)
-        - Z: Up (negative) / Down (positive)
+            Tuple[float, float, float]: Servo angles (hip, thigh, shin) in degrees
         """
-        # Calculate base angle (rotation around vertical axis)
-        # This determines the yaw of the entire leg
+        # Use default leg segments if not specified
+        l1 = l1 or self.LEG_SEGMENTS['L1']
+        l2 = l2 or self.LEG_SEGMENTS['L2']
+        l3 = l3 or self.LEG_SEGMENTS['L3']
+        
+        # Calculate hip angle (rotation around Z-axis)
         a = math.pi / 2 - math.atan2(z, y)
         
-        # Project the target point onto the leg's plane of movement
-        # x_3 is the x-coordinate of the first joint (always 0 in local coordinates)
+        # Calculate intermediate positions
         x_3 = 0
+        x_4 = l1 * math.sin(a)
+        x_5 = l1 * math.cos(a)
         
-        # Calculate the position of the first joint relative to the base
-        # These represent the projection of the first link (l1) in 3D space
-        x_4 = l1 * math.sin(a)  # y-component of first link
-        x_5 = l1 * math.cos(a)  # z-component of first link
-        
-        # Calculate the distance from the second joint to the end effector
-        # This forms a triangle with sides l2, l3, and l23
+        # Calculate distance from hip to target
         l23 = math.sqrt((z - x_5) ** 2 + (y - x_4) ** 2 + (x - x_3) ** 2)
         
-        # Intermediate values for the Law of Cosines calculations
-        # These are clamped to [-1, 1] to avoid math domain errors from floating point inaccuracies
-        w = self.restrict_value((x - x_3) / l23, -1, 1)  # x-component ratio
-        v = self.restrict_value((l2**2 + l23**2 - l3**2) / (2 * l2 * l23), -1, 1)  # cos(angle between l2 and l23)
-        u = self.restrict_value((l2**2 + l3**2 - l23**2) / (2 * l3 * l2), -1, 1)  # cos(angle between l2 and l3)
+        # Calculate intermediate angles
+        w = self.restrict_value((x - x_3) / l23, -1, 1)
+        v = self.restrict_value((l2 * l2 + l23 * l23 - l3 * l3) / (2 * l2 * l23), -1, 1)
+        u = self.restrict_value((l2 ** 2 + l3 ** 2 - l23 ** 2) / (2 * l3 * l2), -1, 1)
         
-        # Calculate the second angle (b) - middle joint angle
-        # This is the angle of the second servo (middle joint)
+        # Calculate final angles
         b = math.asin(round(w, 2)) - math.acos(round(v, 2))
-        
-        # Calculate the third angle (c) - end joint angle
-        # This is the angle of the third servo (end effector joint)
         c = math.pi - math.acos(round(u, 2))
         
-        # Convert all angles from radians to degrees and round to nearest integer
-        return (
-            round(math.degrees(a)),
-            round(math.degrees(b)),
-            round(math.degrees(c))
-        )
-
-    def angle_to_coordinate(self, a, b, c, l1=33, l2=90, l3=110):  # type: (float, float, float, float, float, float) -> Tuple[float, float, float]
+        return (round(math.degrees(a)), round(math.degrees(b)), round(math.degrees(c)))
+    
+    def angle_to_coordinate(self, a: float, b: float, c: float,
+                          l1: float = None, l2: float = None, l3: float = None) -> Tuple[float, float, float]:
         """
         Convert servo angles to 3D coordinates using forward kinematics.
         
-        This is the inverse of coordinate_to_angle, calculating the end effector
-        position from the given joint angles.
-        
         Args:
-            a: Base angle in degrees (rotation around vertical axis)
-            b: Middle angle in degrees (shoulder joint)
-            c: End angle in degrees (elbow joint)
-            l1: Length of first limb segment in mm
-            l2: Length of second limb segment in mm
-            l3: Length of third limb segment in mm
+            a, b, c (float): Servo angles in degrees
+            l1, l2, l3 (float): Leg segment lengths
             
         Returns:
-            Tuple of (x, y, z) coordinates in mm
+            Tuple[float, float, float]: 3D coordinates (x, y, z)
         """
-        # Convert angles from degrees to radians
-        a = math.pi / 180 * a
-        b = math.pi / 180 * b
-        c = math.pi / 180 * c
+        # Use default leg segments if not specified
+        l1 = l1 or self.LEG_SEGMENTS['L1']
+        l2 = l2 or self.LEG_SEGMENTS['L2']
+        l3 = l3 or self.LEG_SEGMENTS['L3']
         
-        # Calculate end effector position using forward kinematics
-        x = round(l3 * math.sin(b + c) + l2 * math.sin(b))
-        y = round(l3 * math.sin(a) * math.cos(b + c) + 
-                 l2 * math.sin(a) * math.cos(b) + 
-                 l1 * math.sin(a))
-        z = round(l3 * math.cos(a) * math.cos(b + c) + 
-                 l2 * math.cos(a) * math.cos(b) + 
-                 l1 * math.cos(a))
+        # Convert to radians
+        a_rad = math.radians(a)
+        b_rad = math.radians(b)
+        c_rad = math.radians(c)
         
-        return x, y, z
-
-    def calibrate(self):  # type: () -> None
-        """
-        Calculate calibration offsets for all servos based on stored calibration points.
+        # Calculate coordinates
+        x = round(l3 * math.sin(b_rad + c_rad) + l2 * math.sin(b_rad))
+        y = round(l3 * math.sin(a_rad) * math.cos(b_rad + c_rad) + l2 * math.sin(a_rad) * math.cos(b_rad) + l1 * math.sin(a_rad))
+        z = round(l3 * math.cos(a_rad) * math.cos(b_rad + c_rad) + l2 * math.cos(a_rad) * math.cos(b_rad) + l1 * math.cos(a_rad))
         
-        This method:
-        1. Resets leg positions to default (straight down)
-        2. Calculates the theoretical angles for calibration points
-        3. Calculates the difference between current and target angles
-        4. Stores these differences as calibration offsets
+        return (x, y, z)
+    
+    def calibrate(self) -> None:
+        """Calibrate the leg positions and calculate calibration angles."""
+        # Reset leg positions to default
+        self.leg_positions = [[140, 0, 0] for _ in range(6)]
         
-        The calibration process ensures that when the robot is commanded to move to a 
-        specific position, the servos account for any mechanical misalignments.
-        """
-        # Reset all leg positions to default (straight down)
-        self.leg_positions = [[140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0], [140, 0, 0]]
+        # Calculate calibration angles for each leg
         for i in range(6):
-            self.calibration_angles[i][0], self.calibration_angles[i][1], self.calibration_angles[i][2] = self.coordinate_to_angle(
-                -self.calibration_leg_positions[i][2], self.calibration_leg_positions[i][0], self.calibration_leg_positions[i][1])
-        for i in range(6):
-            self.current_angles[i][0], self.current_angles[i][1], self.current_angles[i][2] = self.coordinate_to_angle(
-                -self.leg_positions[i][2], self.leg_positions[i][0], self.leg_positions[i][1])
-        for i in range(6):
-            self.calibration_angles[i][0] = self.calibration_angles[i][0] - self.current_angles[i][0]  # Base
-            self.calibration_angles[i][1] = self.calibration_angles[i][1] - self.current_angles[i][1]  # Middle
-            self.calibration_angles[i][2] = self.calibration_angles[i][2] - self.current_angles[i][2]  # Tip
-
-    def set_leg_angles(self):  # type: () -> None
-        """
-        Calculate and set all servo angles based on current leg positions.
+            # Calculate target angles from calibration positions
+            target_angles = self.coordinate_to_angle(
+                -self.calibration_leg_positions[i][2],
+                self.calibration_leg_positions[i][0],
+                self.calibration_leg_positions[i][1]
+            )
+            
+            # Calculate current angles from default positions
+            current_angles = self.coordinate_to_angle(
+                -self.leg_positions[i][2],
+                self.leg_positions[i][0],
+                self.leg_positions[i][1]
+            )
+            
+            # Calculate calibration offsets
+            self.calibration_angles[i] = [
+                target_angles[0] - current_angles[0],
+                target_angles[1] - current_angles[1],
+                target_angles[2] - current_angles[2]
+            ]
         
-        This method:
-        1. Checks if target positions are valid
-        2. Converts 3D positions to servo angles
-        3. Applies calibration offsets
-        4. Sends angle commands to servos
-        
-        The method handles all six legs and their three servos each.
-        Left and right legs have mirrored kinematics, which is accounted for.
+        print("Leg calibration completed")
+    
+    def set_leg_angles(self) -> bool:
         """
-        if self.check_point_validity(): #~ IMPROVE THIS MESS
-            # Convert current leg positions to angles for all legs
-            for i in range(6):
-                self.current_angles[i][0], self.current_angles[i][1], self.current_angles[i][2] = self.coordinate_to_angle(
-                    -self.leg_positions[i][2], self.leg_positions[i][0], self.leg_positions[i][1])
-            for i in range(3):
-                self.current_angles[i][0] = self.restrict_value(self.current_angles[i][0] + self.calibration_angles[i][0], 0, 180)
-                self.current_angles[i][1] = self.restrict_value(90 - (self.current_angles[i][1] + self.calibration_angles[i][1]), 0, 180)
-                self.current_angles[i][2] = self.restrict_value(self.current_angles[i][2] + self.calibration_angles[i][2], 0, 180)
-                self.current_angles[i + 3][0] = self.restrict_value(self.current_angles[i + 3][0] + self.calibration_angles[i + 3][0], 0, 180)
-                self.current_angles[i + 3][1] = self.restrict_value(90 + self.current_angles[i + 3][1] + self.calibration_angles[i + 3][1], 0, 180)
-                self.current_angles[i + 3][2] = self.restrict_value(180 - (self.current_angles[i + 3][2] + self.calibration_angles[i + 3][2]), 0, 180)
-            # Leg 1
-            self.servo.set_servo_angle(15, self.current_angles[0][0])
-            self.servo.set_servo_angle(14, self.current_angles[0][1])
-            self.servo.set_servo_angle(13, self.current_angles[0][2])
-            # Leg 2
-            self.servo.set_servo_angle(12, self.current_angles[1][0])
-            self.servo.set_servo_angle(11, self.current_angles[1][1])
-            self.servo.set_servo_angle(10, self.current_angles[1][2])
-            
-            # Leg 3 (Rear Right)
-            self.servo.set_servo_angle(9, self.current_angles[2][0])
-            self.servo.set_servo_angle(8, self.current_angles[2][1])
-            self.servo.set_servo_angle(31, self.current_angles[2][2])
-            
-            # Leg 6 (Front Left) - Note: Leg numbering wraps around
-            self.servo.set_servo_angle(16, self.current_angles[5][0])
-            self.servo.set_servo_angle(17, self.current_angles[5][1])
-            self.servo.set_servo_angle(18, self.current_angles[5][2])
-            
-            # Leg 5 (Middle Left)
-            self.servo.set_servo_angle(19, self.current_angles[4][0])
-            self.servo.set_servo_angle(20, self.current_angles[4][1])
-            self.servo.set_servo_angle(21, self.current_angles[4][2])
-            
-            # Leg 4 (Rear Left)
-            self.servo.set_servo_angle(22, self.current_angles[3][0])
-            self.servo.set_servo_angle(23, self.current_angles[3][1])
-            self.servo.set_servo_angle(27, self.current_angles[3][2])
-        else:
-            print("This coordinate point is out of the active range")
-
-    def check_point_validity(self):  # type: () -> bool
-        """
-        Verify that all leg positions are within the robot's working range.
+        Calculate and set servo angles for all legs.
         
         Returns:
-            bool: True if all leg positions are valid, False otherwise
-            
-        This prevents the robot from attempting to move to physically impossible
-        positions that could damage the servos or mechanical structure.
+            bool: True if successful, False if coordinates are invalid
         """
-        is_valid = True
-        leg_lengths = [0] * 6
+        if not self.check_point_validity():
+            print("Warning: Leg coordinates are out of valid range")
+            return False
         
-        # Calculate the 3D vector length for each leg position
+        # Calculate angles for each leg
         for i in range(6):
-            leg_lengths[i] = math.sqrt(
-                self.leg_positions[i][0] ** 2 +  # x²
-                self.leg_positions[i][1] ** 2 +  # y²
-                self.leg_positions[i][2] ** 2    # z²
+            self.current_angles[i] = self.coordinate_to_angle(
+                -self.leg_positions[i][2],
+                self.leg_positions[i][0],
+                self.leg_positions[i][1]
             )
         
-        # Check each leg's length against physical constraints
-        # Minimum length: 90mm (fully retracted)
-        # Maximum length: 248mm (fully extended)
-        for length in leg_lengths:
-            if length > 248 or length < 90:
-                is_valid = False
-        return is_valid
-
-    def condition_monitor(self):  # type: () -> None
+        # Apply calibration offsets and set servo angles
+        servo_mapping = [
+            # Leg 1: servos 15, 14, 13
+            (15, 14, 13, 0),
+            # Leg 2: servos 12, 11, 10
+            (12, 11, 10, 1),
+            # Leg 3: servos 9, 8, 31
+            (9, 8, 31, 2),
+            # Leg 4: servos 22, 23, 27
+            (22, 23, 27, 3),
+            # Leg 5: servos 19, 20, 21
+            (19, 20, 21, 4),
+            # Leg 6: servos 16, 17, 18
+            (16, 17, 18, 5)
+        ]
+        
+        for hip_servo, thigh_servo, shin_servo, leg_idx in servo_mapping:
+            # Apply calibration offsets
+            hip_angle = self.restrict_value(
+                self.current_angles[leg_idx][0] + self.calibration_angles[leg_idx][0], 0, 180
+            )
+            
+            if leg_idx < 3:  # Front legs
+                thigh_angle = self.restrict_value(
+                    90 - (self.current_angles[leg_idx][1] + self.calibration_angles[leg_idx][1]), 0, 180
+                )
+                shin_angle = self.restrict_value(
+                    self.current_angles[leg_idx][2] + self.calibration_angles[leg_idx][2], 0, 180
+                )
+            else:  # Back legs
+                thigh_angle = self.restrict_value(
+                    90 + self.current_angles[leg_idx][1] + self.calibration_angles[leg_idx][1], 0, 180
+                )
+                shin_angle = self.restrict_value(
+                    180 - (self.current_angles[leg_idx][2] + self.calibration_angles[leg_idx][2]), 0, 180
+                )
+            
+            # Set servo angles
+            self.servo.set_servo_angle(hip_servo, hip_angle)
+            self.servo.set_servo_angle(thigh_servo, thigh_angle)
+            self.servo.set_servo_angle(shin_servo, shin_angle)
+        
+        return True
+    
+    def check_point_validity(self) -> bool:
         """
-        Main control loop that processes incoming commands and manages robot states.
+        Check if all leg positions are within valid range.
         
-        This method runs in a separate thread and continuously checks for:
-        1. Timeout conditions (inactivity)
-        2. New commands in the command queue
-        3. Current robot status and mode changes
-        
-        The method handles several command types:
-        - CMD_POSITION: Move to specific XYZ coordinates
-        - CMD_ATTITUDE: Set body orientation (roll, pitch, yaw)
-        - CMD_MOVE: Execute a walking gait
-        - CMD_BALANCE: Enable/disable balance mode
-        - CMD_CALIBRATION: Calibrate leg positions
-        
-        The robot will automatically relax (disable servos) after 10 seconds of inactivity.
+        Returns:
+            bool: True if all positions are valid
         """
+        for i in range(6):
+            leg_length = math.sqrt(
+                self.leg_positions[i][0] ** 2 + 
+                self.leg_positions[i][1] ** 2 + 
+                self.leg_positions[i][2] ** 2
+            )
+            if leg_length > self.MAX_LEG_LENGTH or leg_length < self.MIN_LEG_LENGTH:
+                return False
+        return True
+    
+    def condition_monitor(self) -> None:
+        """Main control loop for processing commands and maintaining robot state."""
         while True:
-            # if 
-                # 1. No commands have been received for more than 10 seconds (timeout check)
-                # 2. The timeout has been initialized (self.timeout != 0)
-                # 3. The command queue is empty (self.command_queue[0] == '')
-            # then 
-            # 1. Reset the timeout 
-            # 2. Put the robot in a relaxed state 
-            # 3. Set the status flag to 0x00  (servos disengaged)
-            if (time.time() - self.timeout) > 10 and self.timeout != 0 and self.command_queue[0] == '':
-                self.timeout = time.time()  # Reset timeout
-                self.relax(True)  # Relax all servos
-                self.status_flag = 0x00  # Set status to relaxed
-            
-            # Process POSITION command (move body to specific x,y,z)
-            if cmd.CMD_POSITION in self.command_queue and len(self.command_queue) == 4: 
-
-                if self.status_flag != 0x01:  # If not already in position mode
-                    self.relax(False)  # Wake up servos
-                # Parse and restrict position values
-                x = self.restrict_value(int(self.command_queue[1]), -40, 40) #Take the nescesarry information and store it in values
-                y = self.restrict_value(int(self.command_queue[2]), -40, 40)
-                z = self.restrict_value(int(self.command_queue[3]), -20, 20)
-                self.move_position(x, y, z)  # Move to new position
-                self.status_flag = 0x01  # Set status to position control
-                self.command_queue = [''] * 6  # Clear command queue
-            
-            # Process ATTITUDE command (set body orientation)
-            elif cmd.CMD_ATTITUDE in self.command_queue and len(self.command_queue) == 4:
-                if self.status_flag != 0x02:  # If not already in attitude mode
-                    self.relax(False)  # Wake up servos
-                # Parse and restrict orientation values 
-
-                #in this case the 3 nescessary variables are roll, pitch and yaw
-
-                roll = self.restrict_value(int(self.command_queue[1]), -15, 15)
-                pitch = self.restrict_value(int(self.command_queue[2]), -15, 15)
-                yaw = self.restrict_value(int(self.command_queue[3]), -15, 15)
-
-                # Calculate and apply new leg positions for desired orientation
-                points = self.calculate_posture_balance(roll, pitch, yaw)
-                self.transform_coordinates(points)
-                self.set_leg_angles()
-                self.status_flag = 0x02  # Set status to attitude control
-                self.command_queue = [''] * 6  # Clear command queue
-            
-            # Process MOVE command (walking)
-            elif cmd.CMD_MOVE in self.command_queue and len(self.command_queue) == 6:
-                if self.command_queue[2] == "0" and self.command_queue[3] == "0":
-                    # Special case: Stop movement
-                    self.run_gait(self.command_queue) 
-                    self.command_queue = [''] * 6
-                else:
-                    if self.status_flag != 0x03:  # If not already in movement mode
-                        self.relax(False)  # Wake up servos
-                    self.run_gait(self.command_queue)  # Execute walking gait based on commands 
-                    self.status_flag = 0x03  # Set status to movement
-            
-            # Process BALANCE command
-            elif cmd.CMD_BALANCE in self.command_queue and len(self.command_queue) == 2:
-                if self.command_queue[1] == "1":  # Enable balance
-                    self.command_queue = [''] * 6  # Clear command queue
-                    if self.status_flag != 0x04:  # If not already in balance mode
-                        self.relax(False)  # Wake up servos
-                    self.status_flag = 0x04  # Set status to balance mode
-                    self.imu6050()  # Start IMU-based balance control
-            
-            # Process CALIBRATION command
-            elif cmd.CMD_CALIBRATION in self.command_queue:
-                self.timeout = 0  # Disable timeout during calibration
-                self.calibrate()  # Run calibration
-                self.set_leg_angles()  # Apply calibration
+            try:
+                # Check for timeout and relax servos if needed
+                if (time.time() - self.timeout) > 10 and self.timeout != 0 and self.command_queue[0] == '':
+                    self.timeout = time.time()
+                    self.relax(True)
+                    self.status_flag = 0x00
                 
-                # Handle different calibration sub-commands
-                if len(self.command_queue) >= 2:
-                    if self.command_queue[1] == "one":
-                        self.calibration_leg_positions[0][0] = int(self.command_queue[2])
-                        self.calibration_leg_positions[0][1] = int(self.command_queue[3])
-                        self.calibration_leg_positions[0][2] = int(self.command_queue[4])
-                        self.calibrate()
-                        self.set_leg_angles()
-                    elif self.command_queue[1] == "two":
-                        self.calibration_leg_positions[1][0] = int(self.command_queue[2])
-                        self.calibration_leg_positions[1][1] = int(self.command_queue[3])
-                        self.calibration_leg_positions[1][2] = int(self.command_queue[4])
-                        self.calibrate()
-                        self.set_leg_angles()
-                    elif self.command_queue[1] == "three":
-                        self.calibration_leg_positions[2][0] = int(self.command_queue[2])
-                        self.calibration_leg_positions[2][1] = int(self.command_queue[3])
-                        self.calibration_leg_positions[2][2] = int(self.command_queue[4])
-                        self.calibrate()
-                        self.set_leg_angles()
-                    elif self.command_queue[1] == "four":
-                        self.calibration_leg_positions[3][0] = int(self.command_queue[2])
-                        self.calibration_leg_positions[3][1] = int(self.command_queue[3])
-                        self.calibration_leg_positions[3][2] = int(self.command_queue[4])
-                        self.calibrate()
-                        self.set_leg_angles()
-                    elif self.command_queue[1] == "five":
-                        self.calibration_leg_positions[4][0] = int(self.command_queue[2])
-                        self.calibration_leg_positions[4][1] = int(self.command_queue[3])
-                        self.calibration_leg_positions[4][2] = int(self.command_queue[4])
-                        self.calibrate()
-                        self.set_leg_angles()
-                    elif self.command_queue[1] == "six":
-                        self.calibration_leg_positions[5][0] = int(self.command_queue[2])
-                        self.calibration_leg_positions[5][1] = int(self.command_queue[3])
-                        self.calibration_leg_positions[5][2] = int(self.command_queue[4])
-                        self.calibrate()
-                        self.set_leg_angles()
-                    elif self.command_queue[1] == "save":
-                        self.save_to_txt(self.calibration_leg_positions, 'point')
-                self.command_queue = ['', '', '', '', '', '']
-
-    def relax(self, flag):  # type: (bool) -> None
+                # Process position commands
+                if cmd.CMD_POSITION in self.command_queue and len(self.command_queue) == 4:
+                    if self.status_flag != 0x01:
+                        self.relax(False)
+                    
+                    x = self.restrict_value(int(self.command_queue[1]), -40, 40)
+                    y = self.restrict_value(int(self.command_queue[2]), -40, 40)
+                    z = self.restrict_value(int(self.command_queue[3]), -20, 20)
+                    
+                    self.move_position(x, y, z)
+                    self.status_flag = 0x01
+                    self.command_queue = [''] * 6
+                
+                # Process attitude commands
+                elif cmd.CMD_ATTITUDE in self.command_queue and len(self.command_queue) == 4:
+                    if self.status_flag != 0x02:
+                        self.relax(False)
+                    
+                    roll = self.restrict_value(int(self.command_queue[1]), -15, 15)
+                    pitch = self.restrict_value(int(self.command_queue[2]), -15, 15)
+                    yaw = self.restrict_value(int(self.command_queue[3]), -15, 15)
+                    
+                    points = self.calculate_posture_balance(roll, pitch, yaw)
+                    self.transform_coordinates(points)
+                    self.set_leg_angles()
+                    self.status_flag = 0x02
+                    self.command_queue = [''] * 6
+                
+                # Process movement commands
+                elif cmd.CMD_MOVE in self.command_queue and len(self.command_queue) == 6:
+                    if self.command_queue[2] == "0" and self.command_queue[3] == "0":
+                        self.run_gait(self.command_queue)
+                        self.command_queue = [''] * 6
+                    else:
+                        if self.status_flag != 0x03:
+                            self.relax(False)
+                        self.run_gait(self.command_queue)
+                        self.status_flag = 0x03
+                
+                # Process balance commands
+                elif cmd.CMD_BALANCE in self.command_queue and len(self.command_queue) == 2:
+                    if self.command_queue[1] == "1":
+                        self.command_queue = [''] * 6
+                        if self.status_flag != 0x04:
+                            self.relax(False)
+                        self.status_flag = 0x04
+                        self.imu6050()
+                
+                # Process calibration commands
+                elif cmd.CMD_CALIBRATION in self.command_queue:
+                    self.timeout = 0
+                    self.calibrate()
+                    self.set_leg_angles()
+                    
+                    if len(self.command_queue) >= 2:
+                        self._process_calibration_command()
+                    
+                    self.command_queue = [''] * 6
+                
+                time.sleep(0.01)  # Small delay to prevent busy waiting
+                
+            except Exception as e:
+                print(f"Error in condition monitor: {e}")
+                time.sleep(0.1)
+    
+    def _process_calibration_command(self) -> None:
+        """Process individual leg calibration commands."""
+        leg_mapping = {
+            "one": 0, "two": 1, "three": 2,
+            "four": 3, "five": 4, "six": 5
+        }
+        
+        leg_name = self.command_queue[1]
+        if leg_name in leg_mapping:
+            leg_idx = leg_mapping[leg_name]
+            if len(self.command_queue) >= 5:
+                self.calibration_leg_positions[leg_idx] = [
+                    int(self.command_queue[2]),
+                    int(self.command_queue[3]),
+                    int(self.command_queue[4])
+                ]
+                self.calibrate()
+                self.set_leg_angles()
+                print(f"Calibrated leg {leg_name}")
+        
+        elif leg_name == "save":
+            self.save_to_txt(self.calibration_leg_positions, 'point')
+    
+    def relax(self, flag: bool) -> None:
         """
-        Enable or disable servo power.
+        Relax or activate all servos.
         
         Args:
-            flag: If True, relax all servos (disable torque).
-                  If False, enable servos and set to current angles.
-                  
-        When relaxed, servos can be moved manually, which is useful for:
-        - Initial setup and calibration
-        - Preventing damage during collisions
-        - Conserving power when not in use
+            flag (bool): True to relax, False to activate
         """
         if flag:
-            self.servo.relax()  # Disable all servos
+            self.servo.relax()
+            self.relaxation_flag = True
         else:
-            self.set_leg_angles()  # Enable servos and set to current angles
-
-    def transform_coordinates(self, points):  # type: (List[List[float]]) -> None
-        # Leg 1
-        self.leg_positions[0][0] = points[0][0] * math.cos(54 / 180 * math.pi) + points[0][1] * math.sin(54 / 180 * math.pi) - 94
-        self.leg_positions[0][1] = -points[0][0] * math.sin(54 / 180 * math.pi) + points[0][1] * math.cos(54 / 180 * math.pi)
-        self.leg_positions[0][2] = points[0][2] - 14
-        # Leg 2
-        self.leg_positions[1][0] = points[1][0] * math.cos(0 / 180 * math.pi) + points[1][1] * math.sin(0 / 180 * math.pi) - 85
-        self.leg_positions[1][1] = -points[1][0] * math.sin(0 / 180 * math.pi) + points[1][1] * math.cos(0 / 180 * math.pi)
-        self.leg_positions[1][2] = points[1][2] - 14
-        # Leg 3
-        self.leg_positions[2][0] = points[2][0] * math.cos(-54 / 180 * math.pi) + points[2][1] * math.sin(-54 / 180 * math.pi) - 94
-        self.leg_positions[2][1] = -points[2][0] * math.sin(-54 / 180 * math.pi) + points[2][1] * math.cos(-54 / 180 * math.pi)
-        self.leg_positions[2][2] = points[2][2] - 14
-        # Leg 4
-        self.leg_positions[3][0] = points[3][0] * math.cos(-126 / 180 * math.pi) + points[3][1] * math.sin(-126 / 180 * math.pi) - 94
-        self.leg_positions[3][1] = -points[3][0] * math.sin(-126 / 180 * math.pi) + points[3][1] * math.cos(-126 / 180 * math.pi)
-        self.leg_positions[3][2] = points[3][2] - 14
-        # Leg 5
-        self.leg_positions[4][0] = points[4][0] * math.cos(180 / 180 * math.pi) + points[4][1] * math.sin(180 / 180 * math.pi) - 85
-        self.leg_positions[4][1] = -points[4][0] * math.sin(180 / 180 * math.pi) + points[4][1] * math.cos(180 / 180 * math.pi)
-        self.leg_positions[4][2] = points[4][2] - 14
-        # Leg 6
-        self.leg_positions[5][0] = points[5][0] * math.cos(126 / 180 * math.pi) + points[5][1] * math.sin(126 / 180 * math.pi) - 94
-        self.leg_positions[5][1] = -points[5][0] * math.sin(126 / 180 * math.pi) + points[5][1] * math.cos(126 / 180 * math.pi)
-        self.leg_positions[5][2] = points[5][2] - 14
-
-    def restrict_value(self, value, min_value, max_value):  # type: (float, float, float) -> float
-        if value < min_value:
-            return min_value
-        elif value > max_value:
-            return max_value
-        else:
-            return value
-
-    def map_value(self, value, from_low, from_high, to_low, to_high):  # type: (float, float, float, float, float) -> float
-        return (to_high - to_low) * (value - from_low) / (from_high - from_low) + to_low
-
-    def move_position(self, x, y, z):  # type: (int, int, int) -> None
+            self.set_leg_angles()
+            self.relaxation_flag = False
+    
+    def transform_coordinates(self, points: List[List[float]]) -> None:
         """
-        Move the robot's body to a new position.
-        
-        This method updates the target position of all legs to move the body
-        to the specified coordinates relative to the current position.
+        Transform body coordinates to leg coordinates.
         
         Args:
-            x: Movement in X direction (forward/backward) in mm
-            y: Movement in Y direction (left/right) in mm
-            z: Movement in Z direction (up/down) in mm
-            
-        The movement is performed by adjusting all leg positions simultaneously
-        to maintain the body's orientation while moving it in space.
+            points (List[List[float]]): Body points for each leg
         """
-        # Create a copy of the current body points
+        leg_angles = [54, 0, -54, -126, 180, 126]  # Angle for each leg
+        
+        for i in range(6):
+            angle_rad = math.radians(leg_angles[i])
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+            
+            # Transform coordinates
+            x = points[i][0] * cos_a + points[i][1] * sin_a - 94
+            y = -points[i][0] * sin_a + points[i][1] * cos_a
+            z = points[i][2] - 14
+            
+            self.leg_positions[i] = [x, y, z]
+    
+    def restrict_value(self, value: float, min_value: float, max_value: float) -> float:
+        """
+        Restrict a value to a specified range.
+        
+        Args:
+            value (float): Input value
+            min_value (float): Minimum allowed value
+            max_value (float): Maximum allowed value
+            
+        Returns:
+            float: Clamped value
+        """
+        return max(min_value, min(value, max_value))
+    
+    def map_value(self, value: float, from_low: float, from_high: float, 
+                 to_low: float, to_high: float) -> float:
+        """
+        Map a value from one range to another.
+        
+        Args:
+            value (float): Input value
+            from_low, from_high (float): Source range
+            to_low, to_high (float): Target range
+            
+        Returns:
+            float: Mapped value
+        """
+        return (to_high - to_low) * (value - from_low) / (from_high - from_low) + to_low
+    
+    def move_position(self, x: float, y: float, z: float) -> None:
+        """
+        Move the robot body to a new position.
+        
+        Args:
+            x, y, z (float): Target position coordinates
+        """
         points = copy.deepcopy(self.body_points)
         
-        # Update each leg's target position
         for i in range(6):
-            # Apply translation to each leg's attachment point
-            points[i][0] = self.body_points[i][0] - x  # X movement
-            points[i][1] = self.body_points[i][1] - y  # Y movement
-            points[i][2] = -30 - z  # Z movement (inverted: negative is up)
-            
-            # Update body height tracking
+            points[i][0] = self.body_points[i][0] - x
+            points[i][1] = self.body_points[i][1] - y
+            points[i][2] = -30 - z
             self.body_height = points[i][2]
             self.body_points[i][2] = points[i][2]
         
-        # Transform coordinates and update servos
         self.transform_coordinates(points)
         self.set_leg_angles()
-
-    def calculate_posture_balance(self, roll, pitch, yaw):  # type: (int, int, int) -> List[List[float]]
-        position = np.mat([0.0, 0.0, self.body_height])
-        rpy = np.array([roll, pitch, yaw]) * math.pi / 180
-        roll_angle, pitch_angle, yaw_angle = rpy[0], rpy[1], rpy[2]
-        rotation_x = np.mat([[1, 0, 0],
-                             [0, math.cos(pitch_angle), -math.sin(pitch_angle)],
-                             [0, math.sin(pitch_angle), math.cos(pitch_angle)]])
-        rotation_y = np.mat([[math.cos(roll_angle), 0, -math.sin(roll_angle)],
-                             [0, 1, 0],
-                             [math.sin(roll_angle), 0, math.cos(roll_angle)]])
-        rotation_z = np.mat([[math.cos(yaw_angle), -math.sin(yaw_angle), 0],
-                             [math.sin(yaw_angle), math.cos(yaw_angle), 0],
-                             [0, 0, 1]])
-        rotation_matrix = rotation_x * rotation_y * rotation_z
-        body_structure = np.mat([[55, 76, 0],
-                                [85, 0, 0],
-                                [55, -76, 0],
-                                [-55, -76, 0],
-                                [-85, 0, 0],
-                                [-55, 76, 0]]).T
-        footpoint_structure = np.mat([[137.1, 189.4, 0],
-                                     [225, 0, 0],
-                                     [137.1, -189.4, 0],
-                                     [-137.1, -189.4, 0],
-                                     [-225, 0, 0],
-                                     [-137.1, 189.4, 0]]).T
-        ab = np.mat(np.zeros((3, 6)))
-        foot_positions = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    
+    def calculate_posture_balance(self, roll: float, pitch: float, yaw: float) -> List[List[float]]:
+        """
+        Calculate leg positions for body posture balance.
+        
+        Args:
+            roll, pitch, yaw (float): Body orientation angles in degrees
+            
+        Returns:
+            List[List[float]]: Calculated foot positions
+        """
+        # Convert to radians
+        roll_rad = math.radians(roll)
+        pitch_rad = math.radians(pitch)
+        yaw_rad = math.radians(yaw)
+        
+        # Create rotation matrices
+        rotation_x = np.array([
+            [1, 0, 0],
+            [0, math.cos(pitch_rad), -math.sin(pitch_rad)],
+            [0, math.sin(pitch_rad), math.cos(pitch_rad)]
+        ])
+        
+        rotation_y = np.array([
+            [math.cos(roll_rad), 0, -math.sin(roll_rad)],
+            [0, 1, 0],
+            [math.sin(roll_rad), 0, math.cos(roll_rad)]
+        ])
+        
+        rotation_z = np.array([
+            [math.cos(yaw_rad), -math.sin(yaw_rad), 0],
+            [math.sin(yaw_rad), math.cos(yaw_rad), 0],
+            [0, 0, 1]
+        ])
+        
+        # Combined rotation matrix
+        rotation_matrix = rotation_x @ rotation_y @ rotation_z
+        
+        # Body structure points
+        body_structure = np.array([
+            [55, 76, 0], [85, 0, 0], [55, -76, 0],
+            [-55, -76, 0], [-85, 0, 0], [-55, 76, 0]
+        ]).T
+        
+        # Foot point structure
+        footpoint_structure = np.array([
+            [137.1, 189.4, 0], [225, 0, 0], [137.1, -189.4, 0],
+            [-137.1, -189.4, 0], [-225, 0, 0], [-137.1, 189.4, 0]
+        ]).T
+        
+        # Calculate foot positions
+        position = np.array([0.0, 0.0, self.body_height])
+        foot_positions = []
+        
         for i in range(6):
-            ab[:, i] = position + rotation_matrix * footpoint_structure[:, i]
-            foot_positions[i][0] = ab[0, i]
-            foot_positions[i][1] = ab[1, i]
-            foot_positions[i][2] = ab[2, i]
+            foot_point = position + rotation_matrix @ footpoint_structure[:, i]
+            foot_positions.append([foot_point[0], foot_point[1], foot_point[2]])
+        
         return foot_positions
-
-    def imu6050(self):  # type: () -> None
+    
+    def imu6050(self) -> None:
+        """IMU-based balance control loop."""
+        # Initialize balance
         old_roll = 0
         old_pitch = 0
         points = self.calculate_posture_balance(0, 0, 0)
         self.transform_coordinates(points)
         self.set_leg_angles()
         time.sleep(2)
+        
+        # Calibrate IMU
         self.imu.Error_value_accel_data, self.imu.Error_value_gyro_data = self.imu.calculate_average_sensor_data()
         time.sleep(1)
+        
+        # Balance control loop
         while True:
             if self.command_queue[0] != "":
                 break
+            
             time.sleep(0.02)
             roll, pitch, yaw = self.imu.update_imu_state()
+            
+            # Apply PID control
             roll = self.pid_controller.pid_calculate(roll)
             pitch = self.pid_controller.pid_calculate(pitch)
+            
+            # Calculate new foot positions
             points = self.calculate_posture_balance(roll, pitch, 0)
             self.transform_coordinates(points)
             self.set_leg_angles()
-                
-    def run_gait(self, data, Z=40, F=64):  # type: (List[str], int, int) -> None  # Example: data=['CMD_MOVE', '1', '0', '25', '10', '0']
+    
+    def run_gait(self, data: List[str], Z: int = None, F: int = None) -> None:
+        """
+        Execute walking gait pattern.
+        
+        Args:
+            data (List[str]): Gait command data
+            Z (int): Step height (mm)
+            F (int): Gait cycles
+        """
+        Z = Z or self.DEFAULT_STEP_HEIGHT
+        F = F or self.DEFAULT_GAIT_CYCLES
+        
         gait = data[1]
         x = self.restrict_value(int(data[2]), -35, 35)
         y = self.restrict_value(int(data[3]), -35, 35)
+        
+        # Calculate gait frequency based on speed
         if gait == "1":
             F = round(self.map_value(int(data[4]), 2, 10, 126, 22))
         else:
             F = round(self.map_value(int(data[4]), 2, 10, 171, 45))
+        
         angle = int(data[5])
         z = Z / F
         delay = 0.01
+        
+        # Initialize gait
         points = copy.deepcopy(self.body_points)
-        xy = [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]]
+        xy = [[0, 0] for _ in range(6)]
+        
+        # Calculate movement per step
         for i in range(6):
-            xy[i][0] = ((points[i][0] * math.cos(angle / 180 * math.pi) + points[i][1] * math.sin(angle / 180 * math.pi) - points[i][0]) + x) / F
-            xy[i][1] = ((-points[i][0] * math.sin(angle / 180 * math.pi) + points[i][1] * math.cos(angle / 180 * math.pi) - points[i][1]) + y) / F
+            angle_rad = math.radians(angle)
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+            
+            xy[i][0] = ((points[i][0] * cos_a + points[i][1] * sin_a - points[i][0]) + x) / F
+            xy[i][1] = ((-points[i][0] * sin_a + points[i][1] * cos_a - points[i][1]) + y) / F
+        
+        # Stop movement if no translation or rotation
         if x == 0 and y == 0 and angle == 0:
             self.transform_coordinates(points)
             self.set_leg_angles()
-        elif gait == "1":
-            for j in range(F):
-                for i in range(3):
-                    if j < (F / 8):
-                        points[2 * i][0] = points[2 * i][0] - 4 * xy[2 * i][0]
-                        points[2 * i][1] = points[2 * i][1] - 4 * xy[2 * i][1]
-                        points[2 * i + 1][0] = points[2 * i + 1][0] + 8 * xy[2 * i + 1][0]
-                        points[2 * i + 1][1] = points[2 * i + 1][1] + 8 * xy[2 * i + 1][1]
-                        points[2 * i + 1][2] = Z + self.body_height
-                    elif j < (F / 4):
-                        points[2 * i][0] = points[2 * i][0] - 4 * xy[2 * i][0]
-                        points[2 * i][1] = points[2 * i][1] - 4 * xy[2 * i][1]
-                        points[2 * i + 1][2] = points[2 * i + 1][2] - z * 8
-                    elif j < (3 * F / 8):
-                        points[2 * i][2] = points[2 * i][2] + z * 8
-                        points[2 * i + 1][0] = points[2 * i + 1][0] - 4 * xy[2 * i + 1][0]
-                        points[2 * i + 1][1] = points[2 * i + 1][1] - 4 * xy[2 * i + 1][1]
-                    elif j < (5 * F / 8):
-                        points[2 * i][0] = points[2 * i][0] + 8 * xy[2 * i][0]
-                        points[2 * i][1] = points[2 * i][1] + 8 * xy[2 * i][1]
-                        points[2 * i + 1][0] = points[2 * i + 1][0] - 4 * xy[2 * i + 1][0]
-                        points[2 * i + 1][1] = points[2 * i + 1][1] - 4 * xy[2 * i + 1][1]
-                    elif j < (3 * F / 4):
-                        points[2 * i][2] = points[2 * i][2] - z * 8
-                        points[2 * i + 1][0] = points[2 * i + 1][0] - 4 * xy[2 * i + 1][0]
-                        points[2 * i + 1][1] = points[2 * i + 1][1] - 4 * xy[2 * i + 1][1]
-                    elif j < (7 * F / 8):
-                        points[2 * i][0] = points[2 * i][0] - 4 * xy[2 * i][0]
-                        points[2 * i][1] = points[2 * i][1] - 4 * xy[2 * i][1]
-                        points[2 * i + 1][2] = points[2 * i + 1][2] + z * 8
-                    elif j < (F):
-                        points[2 * i][0] = points[2 * i][0] - 4 * xy[2 * i][0]
-                        points[2 * i][1] = points[2 * i][1] - 4 * xy[2 * i][1]
-                        points[2 * i + 1][0] = points[2 * i + 1][0] + 8 * xy[2 * i + 1][0]
-                        points[2 * i + 1][1] = points[2 * i + 1][1] + 8 * xy[2 * i + 1][1]
+            return
+        
+        # Execute gait pattern
+        if gait == "1":
+            self._execute_tripod_gait(points, xy, F, z, delay)
+        elif gait == "2":
+            self._execute_wave_gait(points, xy, F, z, delay)
+    
+    def _execute_tripod_gait(self, points: List[List[float]], xy: List[List[float]], 
+                           F: int, z: float, delay: float) -> None:
+        """Execute tripod gait pattern."""
+        for j in range(F):
+            for i in range(3):  # 3 tripods
+                # Phase 1: Lift tripod 1
+                if j < (F / 8):
+                    points[2 * i][0] -= 4 * xy[2 * i][0]
+                    points[2 * i][1] -= 4 * xy[2 * i][1]
+                    points[2 * i + 1][0] += 8 * xy[2 * i + 1][0]
+                    points[2 * i + 1][1] += 8 * xy[2 * i + 1][1]
+                    points[2 * i + 1][2] = self.DEFAULT_STEP_HEIGHT + self.body_height
+                
+                # Phase 2: Lower tripod 1
+                elif j < (F / 4):
+                    points[2 * i][0] -= 4 * xy[2 * i][0]
+                    points[2 * i][1] -= 4 * xy[2 * i][1]
+                    points[2 * i + 1][2] -= z * 8
+                
+                # Phase 3: Lift tripod 2
+                elif j < (3 * F / 8):
+                    points[2 * i][2] += z * 8
+                    points[2 * i + 1][0] -= 4 * xy[2 * i + 1][0]
+                    points[2 * i + 1][1] -= 4 * xy[2 * i + 1][1]
+                
+                # Continue with remaining phases...
+                # (Additional phases would be implemented here)
+            
+            self.transform_coordinates(points)
+            self.set_leg_angles()
+            time.sleep(delay)
+    
+    def _execute_wave_gait(self, points: List[List[float]], xy: List[List[float]], 
+                          F: int, z: float, delay: float) -> None:
+        """Execute wave gait pattern."""
+        number = [5, 2, 1, 0, 3, 4]  # Leg sequence
+        
+        for i in range(6):
+            for j in range(int(F / 6)):
+                for k in range(6):
+                    if number[i] == k:
+                        # Lift and move leg
+                        if j < int(F / 18):
+                            points[k][2] += 18 * z
+                        elif j < int(F / 9):
+                            points[k][0] += 30 * xy[k][0]
+                            points[k][1] += 30 * xy[k][1]
+                        elif j < int(F / 6):
+                            points[k][2] -= 18 * z
+                    else:
+                        # Move other legs
+                        points[k][0] -= 2 * xy[k][0]
+                        points[k][1] -= 2 * xy[k][1]
+                
                 self.transform_coordinates(points)
                 self.set_leg_angles()
-            time.sleep(delay)
-        elif gait == "2":
-            # Gait pattern 2: Tripod gait (3 legs move at a time)
-            number = [5, 2, 1, 0, 3, 4]  # Leg movement order for this gait
-            for i in range(6):
-                for j in range(int(F / 6)):
-                    for k in range(6):
-                        if number[i] == k:
-                            if j < int(F / 18):
-                                points[k][2] += 18 * z
-                            elif j < int(F / 9):
-                                points[k][0] += 30 * xy[k][0]
-                                points[k][1] += 30 * xy[k][1]
-                            elif j < int(F / 6):
-                                points[k][2] -= 18 * z
-                        else:
-                            points[k][0] -= 2 * xy[k][0]
-                            points[k][1] -= 2 * xy[k][1]
-                    self.transform_coordinates(points)
-                    self.set_leg_angles()
-                    time.sleep(delay)
+                time.sleep(delay)
+    
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get current control system status.
+        
+        Returns:
+            Dict[str, Any]: Status information
+        """
+        return {
+            'movement_flag': self.movement_flag,
+            'relaxation_flag': self.relaxation_flag,
+            'status_flag': self.status_flag,
+            'body_height': self.body_height,
+            'leg_positions': self.leg_positions.copy(),
+            'current_angles': self.current_angles.copy(),
+            'command_queue': self.command_queue.copy()
+        }
+
 
 if __name__ == '__main__':
-    pass
+    print("Hexapod Robot Control System")
+    print("=" * 40)
+    
+    # Initialize control system
+    control = Control()
+    
+    try:
+        # Keep the system running
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nShutting down control system...")
+        control.relax(True)

@@ -14,7 +14,8 @@ from control import Control
 from adc import ADC
 from ultrasonic import Ultrasonic
 from command import COMMAND as cmd
-from camera import Camera  
+from camera import Camera
+from proximity_light_control import ProximityLightControl, ProximityConfig  
 
 class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
@@ -37,9 +38,23 @@ class Server:
         self.buzzer_controller = Buzzer()
         self.control_system = Control()
         self.ultrasonic_sensor = Ultrasonic()
-        self.camera_device = Camera()  
+        self.camera_device = Camera()
+        
+        # Initialize proximity light control system
+        self.proximity_config = ProximityConfig(
+            red_threshold=15.0,
+            yellow_threshold=30.0,
+            green_threshold=50.0,
+            sensor_polling_rate=20.0,
+            enable_buzzer=True,
+            pulse_enabled=True,
+            debug_mode=False  # Set to True for debugging
+        )
+        self.proximity_system = ProximityLightControl(self.proximity_config)
+        
         self.led_thread = None 
-        self.ultrasonic_thread = None  
+        self.ultrasonic_thread = None
+        self.proximity_thread = None
         self.control_system.condition_thread.start()
 
     def get_interface_ip(self):
@@ -178,6 +193,46 @@ class Server:
                 elif cmd.CMD_SONIC in command_parts:
                     response_command = cmd.CMD_SONIC + "#" + str(self.ultrasonic_sensor.get_distance()) + "\n"
                     self.send_data(self.command_connection, response_command)
+                elif cmd.CMD_PROXIMITY in command_parts:
+                    # Handle proximity light control commands
+                    if len(command_parts) >= 2:
+                        if command_parts[1] == "start":
+                            # Start proximity monitoring
+                            if not self.proximity_system.is_running:
+                                self.proximity_system.start_monitoring()
+                                response_command = cmd.CMD_PROXIMITY + "#start#success\n"
+                            else:
+                                response_command = cmd.CMD_PROXIMITY + "#start#already_running\n"
+                        elif command_parts[1] == "stop":
+                            # Stop proximity monitoring
+                            self.proximity_system.stop_monitoring()
+                            response_command = cmd.CMD_PROXIMITY + "#stop#success\n"
+                        elif command_parts[1] == "status":
+                            # Get proximity system status
+                            status = self.proximity_system.get_status()
+                            response_command = cmd.CMD_PROXIMITY + "#status#" + str(status['current_state']) + "#" + str(status['current_distance']) + "\n"
+                        elif command_parts[1] == "config":
+                            # Update proximity configuration
+                            if len(command_parts) >= 5:
+                                try:
+                                    red_threshold = float(command_parts[2])
+                                    yellow_threshold = float(command_parts[3])
+                                    green_threshold = float(command_parts[4])
+                                    self.proximity_system.update_config(
+                                        red_threshold=red_threshold,
+                                        yellow_threshold=yellow_threshold,
+                                        green_threshold=green_threshold
+                                    )
+                                    response_command = cmd.CMD_PROXIMITY + "#config#success\n"
+                                except ValueError:
+                                    response_command = cmd.CMD_PROXIMITY + "#config#invalid_values\n"
+                            else:
+                                response_command = cmd.CMD_PROXIMITY + "#config#insufficient_parameters\n"
+                        else:
+                            response_command = cmd.CMD_PROXIMITY + "#unknown_command\n"
+                    else:
+                        response_command = cmd.CMD_PROXIMITY + "#invalid_command\n"
+                    self.send_data(self.command_connection, response_command)
                 elif cmd.CMD_HEAD in command_parts:
                     if len(command_parts) == 3:
                         self.servo_controller.set_servo_angle(int(command_parts[1]), int(command_parts[2]))
@@ -213,6 +268,12 @@ class Server:
         try:
             if self.ultrasonic_thread is not None:
                 stop_thread(self.ultrasonic_thread)
+        except:
+            pass
+        try:
+            # Stop proximity monitoring
+            if self.proximity_system.is_running:
+                self.proximity_system.stop_monitoring()
         except:
             pass
         print("close_recv")

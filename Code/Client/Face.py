@@ -2,12 +2,15 @@ import os
 import sys
 import cv2
 import numpy as np
-class  Face:
+class Face:
     def __init__(self):
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
         self.recognizer = cv2.face.LBPHFaceRecognizer_create()
-        self.recognizer.read('Face/face.yml')
-        self.detector = cv2.CascadeClassifier("Face/haarcascade_frontalface_default.xml")
-        self.name = self.Read_from_txt('Face/name')
+        self.recognizer.read(os.path.join(script_dir, 'Face', 'face.yml'))
+        self.detector = cv2.CascadeClassifier(os.path.join(script_dir, "Face", "haarcascade_frontalface_default.xml"))
+        self.name = self.Read_from_txt(os.path.join(script_dir, 'Face', 'name'))
     def Read_from_txt(self, filename):
         file1 = open(filename + ".txt", "r")
         list_row = file1.readlines()
@@ -29,7 +32,10 @@ class  Face:
                 file2.write('\t')
             file2.write('\n')
         file2.close()
-    def getImagesAndLabels(self,path='Face'):
+    def getImagesAndLabels(self,path=None):
+        if path is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            path = os.path.join(script_dir, 'Face')
         imagePaths = [os.path.join(path,f) for f in os.listdir(path)]
         faceSamples=[]
         labels = []
@@ -46,8 +52,10 @@ class  Face:
     def trainImage(self):
         faces, labels = self.getImagesAndLabels()
         self.recognizer.train(faces, np.array(labels))
-        self.recognizer.write('Face/face.yml')
-        self.recognizer.read('Face/face.yml')
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        face_yml_path = os.path.join(script_dir, 'Face', 'face.yml')
+        self.recognizer.write(face_yml_path)
+        self.recognizer.read(face_yml_path)
         print("\n  {0} faces trained.".format(len(np.unique(labels))))
     def face_detect(self,img):
         try:

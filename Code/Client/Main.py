@@ -103,91 +103,39 @@ class MyWindow(QMainWindow,Ui_client):
         self.gait_flag = 1
 
     # keyboard
-    def keyPressEvent(self, event):
-        if (event.key() == Qt.Key_C):
-            print("C")
-            self.connect()
-        if (event.key() == Qt.Key_V):
-            try:
-                print("V")
-                self.video()
-            except Exception as e:
-                print(e)
+class MovementController: # Implemented a class to handle keyboard inputs and control the hexapod movement
+    def __init__(self, parent):
+        self.parent = parent
+        self.active_keys = {
+            Qt.Key_W: False,
+            Qt.Key_A: False,
+            Qt.Key_S: False,
+            Qt.Key_D: False
+        }
+        self.move_positions = {
+            Qt.Key_W: [325, 535],  # Forward
+            Qt.Key_S: [325, 735],  # Backward
+            Qt.Key_A: [225, 635],  # Left
+            Qt.Key_D: [425, 635]   # Right
+        }
+        self.neutral_position = [325, 635]
 
-        if (event.key() == Qt.Key_R):
-            print("R")
-            self.relax()
-        if (event.key() == Qt.Key_L):
-            print("L")
-            self.showLedWindow()
-        if (event.key() == Qt.Key_B):
-            print("B")
-            self.imu()
-        if (event.key() == Qt.Key_F):
-            print("F")
-            self.faceRecognition()
-        if (event.key() == Qt.Key_U):
-            print("U")
-            self.sonic()
-        if (event.key() == Qt.Key_I):
-            print("I")
-            self.showFaceWindow()
-        if (event.key() == Qt.Key_T):
-            print("T")
-            self.showCalibrationWindow()
-        if (event.key() == Qt.Key_Y):
-            print("Y")
-            self.buzzer()
+    def handle_key_press(self, event):
+        if event.key() in self.active_keys:
+            self.active_keys[event.key()] = True
+            print(chr(event.key()))  # Print the key pressed
+            self.parent.move_point = self.move_positions[event.key()]
+            self.parent.move()
 
-        if event.isAutoRepeat():
-            pass
-        else:
-            if event.key() == Qt.Key_W:
-                self.Key_W = True
-                print("W")
-                self.move_point = [325, 535]
-                self.move()
-            elif event.key() == Qt.Key_S:
-                self.Key_S = True
-                print("S")
-                self.move_point = [325, 735]
-                self.move()
-            elif event.key() == Qt.Key_A:
-                self.Key_A = True
-                print("A")
-                self.move_point = [225, 635]
-                self.move()
-            elif event.key() == Qt.Key_D:
-                self.Key_D = True
-                print("D")
-                self.move_point = [425, 635]
-                self.move()
+    def handle_key_release(self, event):
+        if event.key() in self.active_keys and not event.isAutoRepeat():
+            self.active_keys[event.key()] = False
+            print(f"release {chr(event.key())}")
+            # Only reset to neutral if no other movement keys are pressed
+            if not any(self.active_keys.values()):
+                self.parent.move_point = self.neutral_position
+                self.parent.move()
 
-    def keyReleaseEvent(self, event):
-        if (event.key() == Qt.Key_W):
-            if not (event.isAutoRepeat()) and self.Key_W == True:
-                print("release W")
-                self.Key_W = False
-                self.move_point = [325, 635]
-                self.move()
-        elif (event.key() == Qt.Key_A):
-            if not (event.isAutoRepeat()) and self.Key_A == True:
-                print("release A")
-                self.Key_A = False
-                self.move_point = [325, 635]
-                self.move()
-        elif (event.key() == Qt.Key_S):
-            if not (event.isAutoRepeat()) and self.Key_S == True:
-                print("release S")
-                self.Key_S = False
-                self.move_point = [325, 635]
-                self.move()
-        elif (event.key() == Qt.Key_D):
-            if not (event.isAutoRepeat()) and self.Key_D == True:
-                print("release D")
-                self.Key_D = False
-                self.move_point = [325, 635]
-                self.move()
     def paintEvent(self,e):
         try:
             qp=QPainter()
@@ -229,8 +177,8 @@ class MyWindow(QMainWindow,Ui_client):
             print(e)
 
     def mouseMoveEvent(self, event):
-        x = event.pos().x()
-        y = event.pos().y()
+        x = event.pos().x() # Get the x coordinate of the mouse cursor
+        y = event.pos().y() # Get the y coordinate of the mouse cursor
         if x >= 700 and x <= 900:
             if y >= 80 and y <= 280:
                 try:
@@ -293,8 +241,8 @@ class MyWindow(QMainWindow,Ui_client):
             self.update()
 
     def mousePressEvent(self, event):
-        x = event.pos().x()
-        y = event.pos().y()
+        x = event.pos().x() # Get the x coordinate of the mouse cursor
+        y = event.pos().y() # Get the y coordinate of the mouse cursor
         if x >= 700 and x <= 900:
             if y >= 80 and y <= 280:
                 try:
@@ -355,8 +303,8 @@ class MyWindow(QMainWindow,Ui_client):
             self.update()
 
     def mouseReleaseEvent(self, event):
-        x = event.pos().x()
-        y = event.pos().y()
+        x = event.pos().x() # Get the x coordinate of the mouse cursor
+        y = event.pos().y() # Get the y coordinate of the mouse cursor
         #print(x,y)
         if self.move_flag:
             self.move_point = [325, 635]
@@ -781,239 +729,54 @@ class faceWindow(QMainWindow,Ui_Face):
         except Exception as e:
             print(e)
 
-class calibrationWindow(QMainWindow,Ui_calibration):
-    def __init__(self,client):
-        super(calibrationWindow,self).__init__()
+class CalibrationWindow(QMainWindow, Ui_calibration):
+    def __init__(self, client):
+        super().__init__()
         self.setupUi(self)
-        self.setWindowIcon(QIcon('Picture/logo_Mini.png'))
-        self.label_picture.setScaledContents (True)
-        self.label_picture.setPixmap(QPixmap('Picture/Spider_calibration.png'))
-        self.point=self.Read_from_txt('point')
-        self.set_point(self.point)
-        self.client=client
-        self.leg='one'
-        self.x=0
-        self.y=0
-        self.z=0
-        self.radioButton_one.setChecked(True)
-        self.radioButton_one.toggled.connect(lambda: self.leg_point(self.radioButton_one))
-        self.radioButton_two.setChecked(False)
-        self.radioButton_two.toggled.connect(lambda: self.leg_point(self.radioButton_two))
-        self.radioButton_three.setChecked(False)
-        self.radioButton_three.toggled.connect(lambda: self.leg_point(self.radioButton_three))
-        self.radioButton_four.setChecked(False)
-        self.radioButton_four.toggled.connect(lambda: self.leg_point(self.radioButton_four))
-        self.radioButton_five.setChecked(False)
-        self.radioButton_five.toggled.connect(lambda: self.leg_point(self.radioButton_five))
-        self.radioButton_six.setChecked(False)
-        self.radioButton_six.toggled.connect(lambda: self.leg_point(self.radioButton_six))
-        self.Button_Save.clicked.connect(self.save)
-        self.Button_X1.clicked.connect(self.X1)
-        self.Button_X2.clicked.connect(self.X2)
-        self.Button_Y1.clicked.connect(self.Y1)
-        self.Button_Y2.clicked.connect(self.Y2)
-        self.Button_Z1.clicked.connect(self.Z1)
-        self.Button_Z2.clicked.connect(self.Z2)
-    def X1(self):
-        self.get_point()
-        self.x +=1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
-        self.client.send_data(command)
-        self.set_point()
-    def X2(self):
-        self.get_point()
-        self.x -= 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
-        self.client.send_data(command)
-        self.set_point()
-    def Y1(self):
-        self.get_point()
-        self.y += 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
-        self.client.send_data(command)
-        self.set_point()
-    def Y2(self):
-        self.get_point()
-        self.y -= 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
-        self.client.send_data(command)
-        self.set_point()
-    def Z1(self):
-        self.get_point()
-        self.z += 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
-        self.client.send_data(command)
-        self.set_point()
-    def Z2(self):
-        self.get_point()
-        self.z -= 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
-        self.client.send_data(command)
-        self.set_point()
-    def set_point(self,data=None):
-        if data==None:
-            if self.leg== "one":
-                self.one_x.setText(str(self.x))
-                self.one_y.setText(str(self.y))
-                self.one_z.setText(str(self.z))
-                self.point[0][0]=self.x
-                self.point[0][1]=self.y
-                self.point[0][2]=self.z
-            elif self.leg== "two":
-                self.two_x.setText(str(self.x))
-                self.two_y.setText(str(self.y))
-                self.two_z.setText(str(self.z))
-                self.point[1][0]=self.x
-                self.point[1][1]=self.y
-                self.point[1][2]=self.z
-            elif self.leg== "three":
-                self.three_x.setText(str(self.x))
-                self.three_y.setText(str(self.y))
-                self.three_z.setText(str(self.z))
-                self.point[2][0]=self.x
-                self.point[2][1]=self.y
-                self.point[2][2]=self.z
-            elif self.leg== "four":
-                self.four_x.setText(str(self.x))
-                self.four_y.setText(str(self.y))
-                self.four_z.setText(str(self.z))
-                self.point[3][0]=self.x
-                self.point[3][1]=self.y
-                self.point[3][2]=self.z
-            elif self.leg== "five":
-                self.five_x.setText(str(self.x))
-                self.five_y.setText(str(self.y))
-                self.five_z.setText(str(self.z))
-                self.point[4][0]=self.x
-                self.point[4][1]=self.y
-                self.point[4][2]=self.z
-            elif self.leg== "six":
-                self.six_x.setText(str(self.x))
-                self.six_y.setText(str(self.y))
-                self.six_z.setText(str(self.z))
-                self.point[5][0]=self.x
-                self.point[5][1]=self.y
-                self.point[5][2]=self.z
-        else:
-            self.one_x.setText(str(data[0][0]))
-            self.one_y.setText(str(data[0][1]))
-            self.one_z.setText(str(data[0][2]))
-            self.two_x.setText(str(data[1][0]))
-            self.two_y.setText(str(data[1][1]))
-            self.two_z.setText(str(data[1][2]))
-            self.three_x.setText(str(data[2][0]))
-            self.three_y.setText(str(data[2][1]))
-            self.three_z.setText(str(data[2][2]))
-            self.four_x.setText(str(data[3][0]))
-            self.four_y.setText(str(data[3][1]))
-            self.four_z.setText(str(data[3][2]))
-            self.five_x.setText(str(data[4][0]))
-            self.five_y.setText(str(data[4][1]))
-            self.five_z.setText(str(data[4][2]))
-            self.six_x.setText(str(data[5][0]))
-            self.six_y.setText(str(data[5][1]))
-            self.six_z.setText(str(data[5][2]))
-    def get_point(self):
-        if self.leg== "one":
-            self.x = int(self.one_x.text())
-            self.y = int(self.one_y.text())
-            self.z = int(self.one_z.text())
-        elif self.leg== "two":
-            self.x = int(self.two_x.text())
-            self.y = int(self.two_y.text())
-            self.z = int(self.two_z.text())
-        elif self.leg== "three":
-            self.x = int(self.three_x.text())
-            self.y = int(self.three_y.text())
-            self.z = int(self.three_z.text())
-        elif self.leg== "four":
-            self.x = int(self.four_x.text())
-            self.y = int(self.four_y.text())
-            self.z = int(self.four_z.text())
-        elif self.leg== "five":
-            self.x = int(self.five_x.text())
-            self.y = int(self.five_y.text())
-            self.z = int(self.five_z.text())
-        elif self.leg== "six":
-            self.x = int(self.six_x.text())
-            self.y = int(self.six_y.text())
-            self.z = int(self.six_z.text())
-    def save(self):
-        command=cmd.CMD_CALIBRATION+'#'+'save'+'\n'
-        self.client.send_data(command)
-
-        self.point[0][0] = self.one_x.text()
-        self.point[0][1] = self.one_y.text()
-        self.point[0][2] = self.one_z.text()
-
-        self.point[1][0] = self.two_x.text()
-        self.point[1][1] = self.two_y.text()
-        self.point[1][2] = self.two_z.text()
-
-        self.point[2][0] = self.three_x.text()
-        self.point[2][1] = self.three_y.text()
-        self.point[2][2] = self.three_z.text()
-
-        self.point[3][0] = self.four_x.text()
-        self.point[3][1] = self.four_y.text()
-        self.point[3][2] = self.four_z.text()
-
-        self.point[4][0] = self.five_x.text()
-        self.point[4][1] = self.five_y.text()
-        self.point[4][2] = self.five_z.text()
-
-        self.point[5][0] = self.six_x.text()
-        self.point[5][1] = self.six_y.text()
-        self.point[5][2] = self.six_z.text()
-
-        self.Save_to_txt(self.point,'point')
-        reply = QMessageBox.information(self,                        
-                                        "Message",  
-                                        "Saved successfully",  
-                                        QMessageBox.Yes)
-        #print(command)
-    def Read_from_txt(self,filename):
-        file1 = open(filename + ".txt", "r")
-        list_row = file1.readlines()
-        list_source = []
-        for i in range(len(list_row)):
-            column_list = list_row[i].strip().split("\t")
-            list_source.append(column_list)
-        for i in range(len(list_source)):
-            for j in range(len(list_source[i])):
-                list_source[i][j] = int(list_source[i][j])
-        file1.close()
-        return list_source
-
-    def Save_to_txt(self,list, filename):
-        file2 = open(filename + '.txt', 'w')
-        for i in range(len(list)):
-            for j in range(len(list[i])):
-                file2.write(str(list[i][j]))
-                file2.write('\t')
-            file2.write('\n')
-        file2.close()
+        self.client = client
+        self.leg = 'one'
+        self.position = {'x': 0, 'y': 0, 'z': 0}
         
-    def leg_point(self,leg):
-        if leg.text() == "One":
-            if leg.isChecked() == True:
-                self.leg = "one"
-        elif leg.text() == "Two":
-            if leg.isChecked() == True:
-                self.leg = "two"
-        elif leg.text() == "Three":
-            if leg.isChecked() == True:
-                self.leg = "three"
-        elif leg.text() == "Four":
-            if leg.isChecked() == True:
-                self.leg = "four"
-        elif leg.text() == "Five":
-            if leg.isChecked() == True:
-                self.leg = "five"
-        elif leg.text() == "Six":
-            if leg.isChecked() == True:
-                self.leg = "six"
-
+        self._setup_ui()
+        self._load_initial_positions()
+        self._setup_leg_selection()
+    
+    def _setup_ui(self):
+        """Initialize UI elements and their properties."""
+        self.setWindowIcon(QIcon('Picture/logo_Mini.png'))
+        self.label_picture.setScaledContents(True)
+        self.label_picture.setPixmap(QPixmap('Picture/Spider_calibration.png'))
+    
+    def _load_initial_positions(self):
+        """Load saved positions from file."""
+        try:
+            self.point = self.Read_from_txt('point')
+            self.set_point(self.point)
+        except Exception as e:
+            print(f"Error loading positions: {e}")
+            self.point = {}
+    
+    def _setup_leg_selection(self):
+        """Dynamically set up leg selection radio buttons."""
+        leg_buttons = {
+            'one': self.radioButton_one,
+            'two': self.radioButton_two,
+            'three': self.radioButton_three,
+            'four': self.radioButton_four,
+            'five': self.radioButton_five,
+            'six': self.radioButton_six
+        }
+        
+        for leg_name, button in leg_buttons.items():
+            button.setChecked(leg_name == 'one')  # Default to first leg
+            button.toggled.connect(
+                lambda checked, l=leg_name: self.leg_point(l) if checked else None
+            )
+    
+    def leg_point(self, leg_name):
+        """Handle leg selection change."""
+        self.leg = leg_name
+        # Update UI or perform actions when a new leg is selected   
 
 class ColorDialog(QtWidgets.QColorDialog):
     def __init__(self, parent=None):
