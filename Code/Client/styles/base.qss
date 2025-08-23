@@ -1,5 +1,5 @@
 QWidget{
-background:#4d4d4d;
+background:#98b5c2;
 }
 QAbstractButton{
 border-style:none;

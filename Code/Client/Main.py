@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtGui import *
 from Client import *
 from Calibration import *
+from camera_recording import CameraRecorder
 class MyWindow(QMainWindow,Ui_client):
     def __init__(self):
         super(MyWindow,self).__init__()
@@ -18,6 +19,9 @@ class MyWindow(QMainWindow,Ui_client):
         self.setWindowIcon(QIcon('Picture/logo_Mini.png'))
         self.Video.setScaledContents (True)
         self.Video.setPixmap(QPixmap('Picture/Spider_client.png'))
+
+        # Camera recorder for snapshots
+        self.camera_recorder = CameraRecorder(output_dir='Captures', video_label=self.Video)
 
         self.client=Client()
         file = open('IP.txt', 'r')
@@ -39,6 +43,7 @@ class MyWindow(QMainWindow,Ui_client):
         self.Button_Face_ID.clicked.connect(self.showFaceWindow)
         self.Button_Face_Recognition.clicked.connect(self.faceRecognition)
         self.Button_Sonic.clicked.connect(self.sonic)
+        self.Button_Take_Photo.clicked.connect(self.take_photo)
         self.Button_Relax.clicked.connect(self.relax)
         self.Button_Buzzer.pressed.connect(self.buzzer)
         self.Button_Buzzer.released.connect(self.buzzer)
@@ -102,6 +107,22 @@ class MyWindow(QMainWindow,Ui_client):
         self.drawpoint = [[800, 180], [800, 650]]
         self.action_flag = 1
         self.gait_flag = 1
+
+        # Focus handling: don't trap keys in the IP input by default
+        try:
+            # Main window should accept key focus
+            self.setFocusPolicy(Qt.StrongFocus)
+            # Allow the video label to take focus for keyboard handling
+            self.Video.setFocusPolicy(Qt.StrongFocus)
+            # Only focus the IP box when the user clicks it
+            self.lineEdit_IP_Adress.setFocusPolicy(Qt.ClickFocus)
+            # Start with focus outside the IP box
+            self.lineEdit_IP_Adress.clearFocus()
+            self.Video.setFocus(Qt.OtherFocusReason)
+            # When user presses Enter in IP box, move focus to Video (so keys control robot)
+            self.lineEdit_IP_Adress.returnPressed.connect(lambda: self.Video.setFocus(Qt.TabFocusReason))
+        except Exception as e:
+            print(e)
 
     # keyboard
     def keyPressEvent(self, event):
@@ -483,7 +504,7 @@ class MyWindow(QMainWindow,Ui_client):
             print ("Connecttion Successful !")
         except Exception as e:
             print ("Connect to server Faild!: Server IP is right? Server is opend?")
-            self.client.tcp_flag=False
+            self.client.tcp_flag=False 
         while True:
             try:
                 alldata=self.client.receive_data()
@@ -536,6 +557,12 @@ class MyWindow(QMainWindow,Ui_client):
                 self.Button_Connect.setText('Disconnect')
                 #self.time_out.start(11000)
                 self.timer_power.start(3000)
+                # Move focus away from IP field so keys control robot
+                try:
+                    self.lineEdit_IP_Adress.clearFocus()
+                    self.Video.setFocus(Qt.OtherFocusReason)
+                except Exception as _:
+                    pass
             else:
                 try:
                     stop_thread(self.videoThread)
@@ -549,6 +576,12 @@ class MyWindow(QMainWindow,Ui_client):
                 self.client.turn_off_client()
                 self.Button_Connect.setText('Connect')
                 self.timer_power.stop()
+                # Ensure focus returns to Video after disconnect
+                try:
+                    self.lineEdit_IP_Adress.clearFocus()
+                    self.Video.setFocus(Qt.OtherFocusReason)
+                except Exception as _:
+                    pass
         except Exception as e:
             print(e)
     #Mode
@@ -681,6 +714,38 @@ class MyWindow(QMainWindow,Ui_client):
             QImg = QImage(self.client.image.data.tobytes(), width, height, 3 * width, QImage.Format_RGB888)
             self.Video.setPixmap(QPixmap.fromImage(QImg))
             self.client.video_flag = True
+
+    def take_photo(self):
+        """Beep briefly, then save the current frame (or a blank image if none)."""
+        try:
+            # Turn buzzer ON for a short beep (non-blocking)
+            try:
+                self.client.send_data(cmd.CMD_BUZZER + '#1' + '\n')
+            except Exception as e:
+                print(e)
+            # Delay slightly so the beep precedes the shutter
+            QtCore.QTimer.singleShot(120, self._capture_photo_and_buzz_off)
+        except Exception as e:
+            print(e)
+
+    def _capture_photo_and_buzz_off(self):
+        try:
+            # Consider feed available only if client.image has content
+            if hasattr(self.client, 'image') and len(self.client.image) > 0:
+                pix = self.Video.pixmap()
+            else:
+                pix = None
+            # If pix is None or null, CameraRecorder will save a blank image
+            saved_path = self.camera_recorder.capture(pixmap=pix if pix is not None else None)
+            print('Photo saved to:', saved_path)
+        except Exception as e:
+            print(e)
+        finally:
+            # Ensure buzzer is turned OFF
+            try:
+                self.client.send_data(cmd.CMD_BUZZER + '#0' + '\n')
+            except Exception as e:
+                print(e)
 
 class faceWindow(QMainWindow,Ui_Face):
     def __init__(self,client):
