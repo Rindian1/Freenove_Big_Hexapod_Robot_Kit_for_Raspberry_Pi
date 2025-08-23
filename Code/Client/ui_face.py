@@ -112,6 +112,14 @@ class Ui_Face(object):
         self.Button_Read_Face.setStyleSheet("font: 10pt \"Arial\";")
         self.Button_Read_Face.setObjectName("Button_Read_Face")
 
+        self.Button_Take_Photo = QtWidgets.QPushButton(Face)
+        self.Button_Take_Photo.setGeometry(QtCore.QRect(460, 245, 150, 25))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        self.Button_Take_Photo.setFont(font)
+        self.Button_Take_Photo.setStyleSheet("font: 10pt \"Arial\";")
+        self.Button_Take_Photo.setObjectName("Button_Take_Photo")
+
         self.retranslateUi(Face)
         QtCore.QMetaObject.connectSlotsByName(Face)
 

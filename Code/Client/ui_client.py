@@ -10,6 +10,559 @@
 
 
 from PyQt5 import QtCore, QtGui, QtWidgets
+import os
+
+
+class UiFactory:
+    """Factory utilities for building widgets consistently.
+    Composed into Ui_client to reduce repetition while preserving behavior.
+    """
+
+    def __init__(self, ui):
+        self.ui = ui  # access shared fonts/styles like _font9 and _btn_style
+
+    def make_slider(self, parent, name, geom, orientation, minimum=None, maximum=None, value=None, set_font=False):
+        slider = QtWidgets.QSlider(parent)
+        slider.setGeometry(QtCore.QRect(*geom))
+        slider.setStyleSheet(self.ui._btn_style)
+        if minimum is not None:
+            slider.setMinimum(minimum)
+        if maximum is not None:
+            slider.setMaximum(maximum)
+        if value is not None:
+            slider.setProperty("value", value)
+        slider.setOrientation(orientation)
+        slider.setObjectName(name)
+        if set_font:
+            slider.setFont(self.ui._font9)
+        return slider
+
+    def make_button(self, parent, name, geom):
+        btn = QtWidgets.QPushButton(parent)
+        btn.setGeometry(QtCore.QRect(*geom))
+        btn.setFont(self.ui._font9)
+        btn.setStyleSheet(self.ui._btn_style)
+        btn.setObjectName(name)
+        return btn
+
+    def make_radio(self, parent, name):
+        rb = QtWidgets.QRadioButton(parent)
+        rb.setFont(self.ui._font9)
+        rb.setStyleSheet(self.ui._btn_style)
+        rb.setObjectName(name)
+        return rb
+
+
+class SetupUI:
+    """Builder that splits Ui_client.setupUi into small, readable steps.
+    Composed into Ui_client to avoid a giant function.
+    """
+
+    def __init__(self, ui):
+        self.ui = ui  # reference to Ui_client instance
+
+    def build(self, client):
+        self._prep_client(client)
+        # Initialize shared fonts/geo and compose factory
+        self.ui._init_fonts()
+        self.ui._init_geo()
+        self.ui._fx = UiFactory(self.ui)
+
+        # Create UI sections
+        self._create_video(client)
+        self._create_top_buttons(client)
+        self._create_imu_attitude_labels(client)
+        self._create_position_labels(client)
+        self._create_sonic_label(client)
+        self._create_footer_labels(client)
+        self._create_sliders(client)
+        self._create_slider_labels(client)
+        self._create_face_controls(client)
+        self._create_head_controls(client)
+        self._create_speed_control(client)
+        self._create_power_bars(client)
+        self._create_action_mode_radios(client)
+        self._create_gait_mode_radios(client)
+        self._create_status_labels(client)
+
+        # Order and finalize
+        self.ui._z_order()
+        self.ui.retranslateUi(client)
+        QtCore.QMetaObject.connectSlotsByName(client)
+
+    # ------------ helpers ------------
+    def _prep_client(self, client):
+        client.setObjectName("client")
+        client.resize(1000, 800)
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        client.setFont(font)
+        # Apply global styles from external QSS files
+        try:
+            styles_dir = os.path.join(os.path.dirname(__file__), "styles")
+            qss_contents = []
+            for name in sorted(os.listdir(styles_dir)):
+                if name.endswith(".qss"):
+                    with open(os.path.join(styles_dir, name), "r", encoding="utf-8") as f:
+                        qss_contents.append(f.read())
+            if qss_contents:
+                client.setStyleSheet("\n".join(qss_contents))
+        except Exception:
+            pass
+        client.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
+
+    def _create_video(self, client):
+        self.ui.Video = QtWidgets.QLabel(client)
+        self.ui.Video.setGeometry(QtCore.QRect(10, 10, 600, 450))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.Video.setFont(font)
+        self.ui.Video.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.Video.setText("")
+        self.ui.Video.setObjectName("Video")
+
+    def _create_top_buttons(self, client):
+        self.ui.Button_Buzzer = self.ui._fx.make_button(client, "Button_Buzzer", self.ui._geo["Button_Buzzer"])
+        self.ui.lineEdit_IP_Adress = QtWidgets.QLineEdit(client)
+        self.ui.lineEdit_IP_Adress.setGeometry(QtCore.QRect(160, 470, 90, 30))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.lineEdit_IP_Adress.setFont(font)
+        self.ui.lineEdit_IP_Adress.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.lineEdit_IP_Adress.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.lineEdit_IP_Adress.setObjectName("lineEdit_IP_Adress")
+        self.ui.Button_Connect = self.ui._fx.make_button(client, "Button_Connect", (280, 470, 90, 30))
+        self.ui.Button_Video = self.ui._fx.make_button(client, "Button_Video", (400, 470, 90, 30))
+        self.ui.Button_IMU = self.ui._fx.make_button(client, "Button_IMU", self.ui._geo["Button_IMU"])
+        self.ui.Button_Calibration = self.ui._fx.make_button(client, "Button_Calibration", (40, 470, 90, 30))
+        self.ui.Button_Sonic = self.ui._fx.make_button(client, "Button_Sonic", self.ui._geo["Button_Sonic"])
+        self.ui.Button_Take_Photo = self.ui._fx.make_button(client, "Button_Take_Photo", self.ui._geo["Button_Take_Photo"])
+        self.ui.Button_LED = self.ui._fx.make_button(client, "Button_LED", self.ui._geo["Button_LED"])
+
+    def _create_imu_attitude_labels(self, client):
+        self.ui.label_6 = QtWidgets.QLabel(client)
+        self.ui.label_6.setGeometry(QtCore.QRect(913, 75, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_6.setFont(font)
+        self.ui.label_6.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_6.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_6.setObjectName("label_6")
+        self.ui.label_attitude = QtWidgets.QLabel(client)
+        self.ui.label_attitude.setGeometry(QtCore.QRect(801, 185, 60, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_attitude.setFont(font)
+        self.ui.label_attitude.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_attitude.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_attitude.setObjectName("label_attitude")
+        self.ui.label_roll = QtWidgets.QLabel(client)
+        self.ui.label_roll.setGeometry(QtCore.QRect(911, 255, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_roll.setFont(font)
+        self.ui.label_roll.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_roll.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_roll.setObjectName("label_roll")
+        self.ui.label_Y = QtWidgets.QLabel(client)
+        self.ui.label_Y.setGeometry(QtCore.QRect(891, 285, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y.setFont(font)
+        self.ui.label_Y.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y.setObjectName("label_Y")
+        self.ui.label_Y_2 = QtWidgets.QLabel(client)
+        self.ui.label_Y_2.setGeometry(QtCore.QRect(786, 285, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y_2.setFont(font)
+        self.ui.label_Y_2.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y_2.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y_2.setObjectName("label_Y_2")
+        self.ui.label_Y_3 = QtWidgets.QLabel(client)
+        self.ui.label_Y_3.setGeometry(QtCore.QRect(686, 285, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y_3.setFont(font)
+        self.ui.label_Y_3.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y_3.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y_3.setObjectName("label_Y_3")
+        self.ui.label_Y_4 = QtWidgets.QLabel(client)
+        self.ui.label_Y_4.setGeometry(QtCore.QRect(921, 285, 40, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y_4.setFont(font)
+        self.ui.label_Y_4.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y_4.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y_4.setObjectName("label_Y_4")
+
+    def _create_position_labels(self, client):
+        self.ui.label_X = QtWidgets.QLabel(client)
+        self.ui.label_X.setGeometry(QtCore.QRect(665, 265, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X.setFont(font)
+        self.ui.label_X.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X.setObjectName("label_X")
+        self.ui.label_X_2 = QtWidgets.QLabel(client)
+        self.ui.label_X_2.setGeometry(QtCore.QRect(665, 170, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X_2.setFont(font)
+        self.ui.label_X_2.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X_2.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X_2.setObjectName("label_X_2")
+        self.ui.label_X_3 = QtWidgets.QLabel(client)
+        self.ui.label_X_3.setGeometry(QtCore.QRect(665, 74, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X_3.setFont(font)
+        self.ui.label_X_3.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X_3.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X_3.setObjectName("label_X_3")
+        self.ui.label_X_4 = QtWidgets.QLabel(client)
+        self.ui.label_X_4.setGeometry(QtCore.QRect(645, 90, 50, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X_4.setFont(font)
+        self.ui.label_X_4.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X_4.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X_4.setObjectName("label_X_4")
+        self.ui.label_X_5 = QtWidgets.QLabel(client)
+        self.ui.label_X_5.setGeometry(QtCore.QRect(736, 54, 131, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X_5.setFont(font)
+        self.ui.label_X_5.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X_5.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X_5.setObjectName("label_X_5")
+
+    def _create_sonic_label(self, client):
+        self.ui.label_sonic = QtWidgets.QLabel(client)
+        self.ui.label_sonic.setGeometry(QtCore.QRect(870, 355, 120, 30))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_sonic.setFont(font)
+        self.ui.label_sonic.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_sonic.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_sonic.setObjectName("label_sonic")
+
+    def _create_footer_labels(self, client):
+        self.ui.label_Y_5 = QtWidgets.QLabel(client)
+        self.ui.label_Y_5.setGeometry(QtCore.QRect(917, 751, 40, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y_5.setFont(font)
+        self.ui.label_Y_5.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y_5.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y_5.setObjectName("label_Y_5")
+        self.ui.label_Y_6 = QtWidgets.QLabel(client)
+        self.ui.label_Y_6.setGeometry(QtCore.QRect(686, 751, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y_6.setFont(font)
+        self.ui.label_Y_6.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y_6.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y_6.setObjectName("label_Y_6")
+        self.ui.label_X_6 = QtWidgets.QLabel(client)
+        self.ui.label_X_6.setGeometry(QtCore.QRect(665, 545, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X_6.setFont(font)
+        self.ui.label_X_6.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X_6.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X_6.setObjectName("label_X_6")
+        self.ui.label_Y_7 = QtWidgets.QLabel(client)
+        self.ui.label_Y_7.setGeometry(QtCore.QRect(786, 751, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y_7.setFont(font)
+        self.ui.label_Y_7.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y_7.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y_7.setObjectName("label_Y_7")
+        self.ui.label_X_7 = QtWidgets.QLabel(client)
+        self.ui.label_X_7.setGeometry(QtCore.QRect(665, 640, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X_7.setFont(font)
+        self.ui.label_X_7.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X_7.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X_7.setObjectName("label_X_7")
+        self.ui.label_Y_8 = QtWidgets.QLabel(client)
+        self.ui.label_Y_8.setGeometry(QtCore.QRect(891, 751, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Y_8.setFont(font)
+        self.ui.label_Y_8.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Y_8.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Y_8.setObjectName("label_Y_8")
+        self.ui.label_X_8 = QtWidgets.QLabel(client)
+        self.ui.label_X_8.setGeometry(QtCore.QRect(665, 735, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_X_8.setFont(font)
+        self.ui.label_X_8.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_X_8.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_X_8.setObjectName("label_X_8")
+
+    def _create_sliders(self, client):
+        self.ui.slider_roll = self.ui._fx.make_slider(
+            client, "slider_roll", (916, 105, 20, 140), QtCore.Qt.Vertical, minimum=-20, maximum=20
+        )
+        self.ui.slider_Z = self.ui._fx.make_slider(
+            client, "slider_Z", (916, 580, 20, 140), QtCore.Qt.Vertical, minimum=-40, maximum=40
+        )
+
+    def _create_slider_labels(self, client):
+        self.ui.label_Z = QtWidgets.QLabel(client)
+        self.ui.label_Z.setGeometry(QtCore.QRect(911, 725, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_Z.setFont(font)
+        self.ui.label_Z.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Z.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_Z.setObjectName("label_Z")
+        self.ui.label_9 = QtWidgets.QLabel(client)
+        self.ui.label_9.setGeometry(QtCore.QRect(913, 556, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_9.setFont(font)
+        self.ui.label_9.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_9.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_9.setObjectName("label_9")
+
+    def _create_face_controls(self, client):
+        self.ui.Button_Face_ID = self.ui._fx.make_button(client, "Button_Face_ID", (40, 510, 90, 30))
+        self.ui.Button_Face_Recognition = self.ui._fx.make_button(client, "Button_Face_Recognition", (630, 355, 90, 30))
+
+    def _create_head_controls(self, client):
+        self.ui.slider_head_1 = self.ui._fx.make_slider(
+            client, "slider_head_1", (245, 765, 160, 20), QtCore.Qt.Horizontal, maximum=180, value=90
+        )
+        self.ui.label_head_1 = QtWidgets.QLabel(client)
+        self.ui.label_head_1.setGeometry(QtCore.QRect(410, 765, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_head_1.setFont(font)
+        self.ui.label_head_1.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_head_1.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_head_1.setObjectName("label_head_1")
+        self.ui.label_10 = QtWidgets.QLabel(client)
+        self.ui.label_10.setGeometry(QtCore.QRect(195, 765, 50, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_10.setFont(font)
+        self.ui.label_10.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_10.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_10.setObjectName("label_10")
+        self.ui.label_8 = QtWidgets.QLabel(client)
+        self.ui.label_8.setGeometry(QtCore.QRect(480, 555, 30, 16))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_8.setFont(font)
+        self.ui.label_8.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_8.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_8.setObjectName("label_8")
+        self.ui.slider_head = self.ui._fx.make_slider(
+            client, "slider_head", (485, 572, 20, 160), QtCore.Qt.Vertical, maximum=180, value=90
+        )
+        self.ui.label_head = QtWidgets.QLabel(client)
+        self.ui.label_head.setGeometry(QtCore.QRect(480, 732, 30, 20))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_head.setFont(font)
+        self.ui.label_head.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_head.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_head.setObjectName("label_head")
+
+    def _create_speed_control(self, client):
+        self.ui.label_7 = QtWidgets.QLabel(client)
+        self.ui.label_7.setGeometry(QtCore.QRect(553, 555, 36, 16))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_7.setFont(font)
+        self.ui.label_7.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_7.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_7.setObjectName("label_7")
+        self.ui.label_speed = QtWidgets.QLabel(client)
+        self.ui.label_speed.setGeometry(QtCore.QRect(563, 732, 16, 16))
+        font = QtGui.QFont()
+        font.setFamily("Arial")
+        font.setPointSize(9)
+        font.setBold(False)
+        font.setItalic(False)
+        font.setWeight(50)
+        self.ui.label_speed.setFont(font)
+        self.ui.label_speed.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_speed.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.label_speed.setObjectName("label_speed")
+        self.ui.slider_speed = self.ui._fx.make_slider(
+            client, "slider_speed", (560, 572, 20, 160), QtCore.Qt.Vertical, minimum=2, maximum=10, value=8, set_font=True
+        )
+
+    def _create_power_bars(self, client):
+        self.ui.progress_Power1 = QtWidgets.QProgressBar(client)
+        self.ui.progress_Power1.setGeometry(QtCore.QRect(45, 705, 120, 20))
+        self.ui.progress_Power1.setProperty("value", 100)
+        self.ui.progress_Power1.setFormat("")
+        self.ui.progress_Power1.setObjectName("progress_Power1")
+        self.ui.progress_Power2 = QtWidgets.QProgressBar(client)
+        self.ui.progress_Power2.setGeometry(QtCore.QRect(45, 755, 120, 20))
+        self.ui.progress_Power2.setProperty("value", 100)
+        self.ui.progress_Power2.setFormat("")
+        self.ui.progress_Power2.setObjectName("progress_Power2")
+
+    def _create_action_mode_radios(self, client):
+        self.ui.layoutWidget = QtWidgets.QWidget(client)
+        self.ui.layoutWidget.setGeometry(QtCore.QRect(25, 620, 121, 60))
+        self.ui.layoutWidget.setObjectName("layoutWidget")
+        self.ui.verticalLayout = QtWidgets.QVBoxLayout(self.ui.layoutWidget)
+        self.ui.verticalLayout.setContentsMargins(0, 0, 0, 0)
+        self.ui.verticalLayout.setObjectName("verticalLayout")
+        self.ui.ButtonActionMode1 = self.ui._fx.make_radio(self.ui.layoutWidget, "ButtonActionMode1")
+        self.ui.verticalLayout.addWidget(self.ui.ButtonActionMode1)
+        self.ui.ButtonActionMode2 = self.ui._fx.make_radio(self.ui.layoutWidget, "ButtonActionMode2")
+        self.ui.verticalLayout.addWidget(self.ui.ButtonActionMode2)
+
+    def _create_gait_mode_radios(self, client):
+        self.ui.layoutWidget1 = QtWidgets.QWidget(client)
+        self.ui.layoutWidget1.setGeometry(QtCore.QRect(30, 550, 111, 60))
+        self.ui.layoutWidget1.setObjectName("layoutWidget1")
+        self.ui.verticalLayout_2 = QtWidgets.QVBoxLayout(self.ui.layoutWidget1)
+        self.ui.verticalLayout_2.setContentsMargins(0, 0, 0, 0)
+        self.ui.verticalLayout_2.setObjectName("verticalLayout_2")
+        self.ui.ButtonGaitMode1 = self.ui._fx.make_radio(self.ui.layoutWidget1, "ButtonGaitMode1")
+        self.ui.verticalLayout_2.addWidget(self.ui.ButtonGaitMode1)
+        self.ui.ButtonGaitMode2 = self.ui._fx.make_radio(self.ui.layoutWidget1, "ButtonGaitMode2")
+        self.ui.verticalLayout_2.addWidget(self.ui.ButtonGaitMode2)
+
+    def _create_status_labels(self, client):
+        self.ui.label_RasPi = QtWidgets.QLabel(client)
+        self.ui.label_RasPi.setGeometry(QtCore.QRect(10, 757, 30, 15))
+        self.ui.label_RasPi.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_RasPi.setObjectName("label_RasPi")
+        self.ui.label_Load = QtWidgets.QLabel(client)
+        self.ui.label_Load.setGeometry(QtCore.QRect(10, 707, 30, 15))
+        self.ui.label_Load.setStyleSheet("font: 10pt \"Arial\";")
+        self.ui.label_Load.setObjectName("label_Load")
 
 
 class Ui_client(object):
@@ -19,118 +572,27 @@ class Ui_client(object):
         font = QtGui.QFont()
         font.setFamily("Arial")
         client.setFont(font)
-        client.setStyleSheet("QWidget{\n"
-"background:#484848;\n"
-"}\n"
-"QAbstractButton{\n"
-"border-style:none;\n"
-"border-radius:0px;\n"
-"padding:5px;\n"
-"color:#DCDCDC;\n"
-"background:qlineargradient(spread:pad,x1:0,y1:0,x2:0,y2:1,stop:0 #858585,stop:1 #383838);\n"
-"}\n"
-"QAbstractButton:hover{\n"
-"color:#000000;\n"
-"background-color:#008aff;\n"
-"}\n"
-"QAbstractButton:pressed{\n"
-"color:#DCDCDC;\n"
-"border-style:solid;\n"
-"border-width:0px 0px 0px 4px;\n"
-"padding:4px 4px 4px 2px;\n"
-"border-color:#008aff;\n"
-"background-color:#444444;\n"
-"}\n"
-"\n"
-"QLabel{\n"
-"color:#DCDCDC;\n"
-"\n"
-"\n"
-"}\n"
-"QLabel:focus{\n"
-"border:1px solid #00BB9E;\n"
-"\n"
-"}\n"
-"\n"
-"QLineEdit{\n"
-"border:1px solid #242424;\n"
-"border-radius:3px;\n"
-"padding:2px;\n"
-"background:none;\n"
-"selection-background-color:#484848;\n"
-"selection-color:#DCDCDC;\n"
-"}\n"
-"QLineEdit:focus,QLineEdit:hover{\n"
-"border:1px solid #242424;\n"
-"}\n"
-"QLineEdit{\n"
-"border:1px solid #242424;\n"
-"border-radius:3px;\n"
-"padding:2px;\n"
-"background:none;\n"
-"selection-background-color:#484848;\n"
-"selection-color:#DCDCDC;\n"
-"}\n"
-"\n"
-"QLineEdit:focus,QLineEdit:hover{\n"
-"border:1px solid #242424;\n"
-"}\n"
-"QLineEdit{\n"
-"lineedit-password-character:9679;\n"
-"}\n"
-"QSlider::groove:horizontal,QSlider::add-page:horizontal{\n"
-"height:3px;\n"
-"border-radius:3px;\n"
-"background:#18181a;\n"
-"}\n"
-"\n"
-"\n"
-"QSlider::sub-page:horizontal{\n"
-"height:8px;\n"
-"border-radius:3px;\n"
-"background:#008aff;\n"
-"}\n"
-"\n"
-"\n"
-"QSlider::handle:horizontal{\n"
-"width:12px;\n"
-"margin-top:-5px;\n"
-"margin-bottom:-4px;\n"
-"border-radius:6px;\n"
-"background:qradialgradient(spread:pad,cx:0.5,cy:0.5,radius:0.5,fx:0.5,fy:0.5,stop:0.6 #DCDCDC,stop:0.8 #DCDCDC);\n"
-"}\n"
-"QSlider::groove:vertical,QSlider::sub-page:vertical{\n"
-"width:3px;\n"
-"border-radius:3px;\n"
-"background:#18181a;\n"
-"}\n"
-"\n"
-"\n"
-"QSlider::add-page:vertical{\n"
-"width:8px;\n"
-"border-radius:3px;\n"
-"background:#008aff;\n"
-"}\n"
-"\n"
-"\n"
-"QSlider::handle:vertical{\n"
-"height:12px;\n"
-"margin-left:-5px;\n"
-"margin-right:-4px;\n"
-"border-radius:6px;\n"
-"background:qradialgradient(spread:pad,cx:0.5,cy:0.5,radius:0.5,fx:0.5,fy:0.5,stop:0.6 #DCDCDC,stop:0.8 #DCDCDC);\n"
-"}\n"
-"\n"
-"\n"
-"\n"
-"QGroupBox::title {\n"
-"pading:2px;\n"
-"color:white;\n"
-"subcontrol-position: top center;\n"
-"border-top:0px ;\n"
-"background:  transparent;} \n"
-"font: 10pt \"Arial\";")
+        # Apply global styles from external QSS files (reduces inline walls of text)
+        try:
+            styles_dir = os.path.join(os.path.dirname(__file__), "styles")
+            qss_contents = []
+            for name in sorted(os.listdir(styles_dir)):
+                if name.endswith(".qss"):
+                    with open(os.path.join(styles_dir, name), "r", encoding="utf-8") as f:
+                        qss_contents.append(f.read())
+            if qss_contents:
+                client.setStyleSheet("\n".join(qss_contents))
+        except Exception:
+            # If stylesheet load fails, continue without altering functionality
+            pass
         client.setLocale(QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates))
+        # --- Initialize shared styles and fonts (readability improvement; no behavior change) ---
+        self._init_fonts()
+        # --- Initialize shared geometry values (readability; no behavior change) ---
+        self._init_geo()
+        # Compose factory for widget creation
+        self._fx = UiFactory(self)
+        # --- Video display ---
         self.Video = QtWidgets.QLabel(client)
         self.Video.setGeometry(QtCore.QRect(10, 10, 600, 450))
         font = QtGui.QFont()
@@ -143,17 +605,8 @@ class Ui_client(object):
         self.Video.setStyleSheet("font: 10pt \"Arial\";")
         self.Video.setText("")
         self.Video.setObjectName("Video")
-        self.Button_Buzzer = QtWidgets.QPushButton(client)
-        self.Button_Buzzer.setGeometry(QtCore.QRect(750, 425, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Buzzer.setFont(font)
-        self.Button_Buzzer.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Buzzer.setObjectName("Button_Buzzer")
+        # --- Buttons (top/right controls) ---
+        self.Button_Buzzer = self._fx.make_button(client, "Button_Buzzer", self._geo["Button_Buzzer"])
         self.lineEdit_IP_Adress = QtWidgets.QLineEdit(client)
         self.lineEdit_IP_Adress.setGeometry(QtCore.QRect(160, 470, 90, 30))
         font = QtGui.QFont()
@@ -166,72 +619,14 @@ class Ui_client(object):
         self.lineEdit_IP_Adress.setStyleSheet("font: 10pt \"Arial\";")
         self.lineEdit_IP_Adress.setAlignment(QtCore.Qt.AlignCenter)
         self.lineEdit_IP_Adress.setObjectName("lineEdit_IP_Adress")
-        self.Button_Connect = QtWidgets.QPushButton(client)
-        self.Button_Connect.setGeometry(QtCore.QRect(280, 470, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Connect.setFont(font)
-        self.Button_Connect.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Connect.setObjectName("Button_Connect")
-        self.Button_Video = QtWidgets.QPushButton(client)
-        self.Button_Video.setGeometry(QtCore.QRect(400, 470, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Video.setFont(font)
-        self.Button_Video.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Video.setObjectName("Button_Video")
-        self.Button_IMU = QtWidgets.QPushButton(client)
-        self.Button_IMU.setGeometry(QtCore.QRect(630, 425, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_IMU.setFont(font)
-        self.Button_IMU.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_IMU.setObjectName("Button_IMU")
-        self.Button_Calibration = QtWidgets.QPushButton(client)
-        self.Button_Calibration.setGeometry(QtCore.QRect(40, 470, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Calibration.setFont(font)
-        self.Button_Calibration.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Calibration.setObjectName("Button_Calibration")
-        self.Button_Sonic = QtWidgets.QPushButton(client)
-        self.Button_Sonic.setGeometry(QtCore.QRect(880, 425, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Sonic.setFont(font)
-        self.Button_Sonic.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Sonic.setObjectName("Button_Sonic")
-        self.Button_LED = QtWidgets.QPushButton(client)
-        self.Button_LED.setGeometry(QtCore.QRect(750, 355, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_LED.setFont(font)
-        self.Button_LED.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_LED.setObjectName("Button_LED")
+        self.Button_Connect = self._fx.make_button(client, "Button_Connect", (280, 470, 90, 30))
+        self.Button_Video = self._fx.make_button(client, "Button_Video", (400, 470, 90, 30))
+        self.Button_IMU = self._fx.make_button(client, "Button_IMU", self._geo["Button_IMU"])
+        self.Button_Calibration = self._fx.make_button(client, "Button_Calibration", (40, 470, 90, 30))
+        self.Button_Sonic = self._fx.make_button(client, "Button_Sonic", self._geo["Button_Sonic"])
+        self.Button_Take_Photo = self._fx.make_button(client, "Button_Take_Photo", self._geo["Button_Take_Photo"])
+        self.Button_LED = self._fx.make_button(client, "Button_LED", self._geo["Button_LED"])
+        # --- IMU/Attitude labels ---
         self.label_6 = QtWidgets.QLabel(client)
         self.label_6.setGeometry(QtCore.QRect(913, 75, 30, 20))
         font = QtGui.QFont()
@@ -316,6 +711,7 @@ class Ui_client(object):
         self.label_Y_4.setStyleSheet("font: 10pt \"Arial\";")
         self.label_Y_4.setAlignment(QtCore.Qt.AlignCenter)
         self.label_Y_4.setObjectName("label_Y_4")
+        # --- Position labels ---
         self.label_X = QtWidgets.QLabel(client)
         self.label_X.setGeometry(QtCore.QRect(665, 265, 30, 20))
         font = QtGui.QFont()
@@ -376,6 +772,7 @@ class Ui_client(object):
         self.label_X_5.setStyleSheet("font: 10pt \"Arial\";")
         self.label_X_5.setAlignment(QtCore.Qt.AlignCenter)
         self.label_X_5.setObjectName("label_X_5")
+        # --- Sonic label ---
         self.label_sonic = QtWidgets.QLabel(client)
         self.label_sonic.setGeometry(QtCore.QRect(870, 355, 120, 30))
         font = QtGui.QFont()
@@ -388,6 +785,7 @@ class Ui_client(object):
         self.label_sonic.setStyleSheet("font: 10pt \"Arial\";")
         self.label_sonic.setAlignment(QtCore.Qt.AlignCenter)
         self.label_sonic.setObjectName("label_sonic")
+        # --- Footer labels ---
         self.label_Y_5 = QtWidgets.QLabel(client)
         self.label_Y_5.setGeometry(QtCore.QRect(917, 751, 40, 20))
         font = QtGui.QFont()
@@ -472,6 +870,7 @@ class Ui_client(object):
         self.label_X_8.setStyleSheet("font: 10pt \"Arial\";")
         self.label_X_8.setAlignment(QtCore.Qt.AlignCenter)
         self.label_X_8.setObjectName("label_X_8")
+        # --- Position title ---
         self.label_position = QtWidgets.QLabel(client)
         self.label_position.setGeometry(QtCore.QRect(801, 655, 60, 20))
         font = QtGui.QFont()
@@ -508,20 +907,14 @@ class Ui_client(object):
         self.label_X_10.setStyleSheet("font: 10pt \"Arial\";")
         self.label_X_10.setAlignment(QtCore.Qt.AlignCenter)
         self.label_X_10.setObjectName("label_X_10")
-        self.slider_roll = QtWidgets.QSlider(client)
-        self.slider_roll.setGeometry(QtCore.QRect(916, 105, 20, 140))
-        self.slider_roll.setStyleSheet("font: 10pt \"Arial\";")
-        self.slider_roll.setMinimum(-20)
-        self.slider_roll.setMaximum(20)
-        self.slider_roll.setOrientation(QtCore.Qt.Vertical)
-        self.slider_roll.setObjectName("slider_roll")
-        self.slider_Z = QtWidgets.QSlider(client)
-        self.slider_Z.setGeometry(QtCore.QRect(916, 580, 20, 140))
-        self.slider_Z.setStyleSheet("font: 10pt \"Arial\";")
-        self.slider_Z.setMinimum(-40)
-        self.slider_Z.setMaximum(40)
-        self.slider_Z.setOrientation(QtCore.Qt.Vertical)
-        self.slider_Z.setObjectName("slider_Z")
+        # --- Sliders ---
+        self.slider_roll = self._fx.make_slider(
+            client, "slider_roll", (916, 105, 20, 140), QtCore.Qt.Vertical, minimum=-20, maximum=20
+        )
+        self.slider_Z = self._fx.make_slider(
+            client, "slider_Z", (916, 580, 20, 140), QtCore.Qt.Vertical, minimum=-40, maximum=40
+        )
+        # --- Slider labels ---
         self.label_Z = QtWidgets.QLabel(client)
         self.label_Z.setGeometry(QtCore.QRect(911, 725, 30, 20))
         font = QtGui.QFont()
@@ -546,46 +939,15 @@ class Ui_client(object):
         self.label_9.setStyleSheet("font: 10pt \"Arial\";")
         self.label_9.setAlignment(QtCore.Qt.AlignCenter)
         self.label_9.setObjectName("label_9")
-        self.Button_Face_ID = QtWidgets.QPushButton(client)
-        self.Button_Face_ID.setGeometry(QtCore.QRect(40, 510, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Face_ID.setFont(font)
-        self.Button_Face_ID.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Face_ID.setObjectName("Button_Face_ID")
-        self.Button_Face_Recognition = QtWidgets.QPushButton(client)
-        self.Button_Face_Recognition.setGeometry(QtCore.QRect(630, 355, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Face_Recognition.setFont(font)
-        self.Button_Face_Recognition.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Face_Recognition.setObjectName("Button_Face_Recognition")
-        self.Button_Relax = QtWidgets.QPushButton(client)
-        self.Button_Relax.setGeometry(QtCore.QRect(520, 470, 90, 30))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.Button_Relax.setFont(font)
-        self.Button_Relax.setStyleSheet("font: 10pt \"Arial\";")
-        self.Button_Relax.setObjectName("Button_Relax")
-        self.slider_head_1 = QtWidgets.QSlider(client)
-        self.slider_head_1.setGeometry(QtCore.QRect(245, 765, 160, 20))
-        self.slider_head_1.setStyleSheet("font: 10pt \"Arial\";")
-        self.slider_head_1.setMaximum(180)
-        self.slider_head_1.setProperty("value", 90)
-        self.slider_head_1.setOrientation(QtCore.Qt.Horizontal)
-        self.slider_head_1.setObjectName("slider_head_1")
+        # --- Face controls ---
+        self.Button_Face_ID = self._fx.make_button(client, "Button_Face_ID", (40, 510, 90, 30))
+        self.Button_Face_Recognition = self._fx.make_button(client, "Button_Face_Recognition", (630, 355, 90, 30))
+        # --- Relax control ---
+        self.Button_Relax = self._fx.make_button(client, "Button_Relax", (520, 470, 90, 30))
+        # --- Head controls ---
+        self.slider_head_1 = self._fx.make_slider(
+            client, "slider_head_1", (245, 765, 160, 20), QtCore.Qt.Horizontal, maximum=180, value=90
+        )
         self.label_head_1 = QtWidgets.QLabel(client)
         self.label_head_1.setGeometry(QtCore.QRect(410, 765, 30, 20))
         font = QtGui.QFont()
@@ -622,13 +984,9 @@ class Ui_client(object):
         self.label_8.setStyleSheet("font: 10pt \"Arial\";")
         self.label_8.setAlignment(QtCore.Qt.AlignCenter)
         self.label_8.setObjectName("label_8")
-        self.slider_head = QtWidgets.QSlider(client)
-        self.slider_head.setGeometry(QtCore.QRect(485, 572, 20, 160))
-        self.slider_head.setStyleSheet("font: 10pt \"Arial\";")
-        self.slider_head.setMaximum(180)
-        self.slider_head.setProperty("value", 90)
-        self.slider_head.setOrientation(QtCore.Qt.Vertical)
-        self.slider_head.setObjectName("slider_head")
+        self.slider_head = self._fx.make_slider(
+            client, "slider_head", (485, 572, 20, 160), QtCore.Qt.Vertical, maximum=180, value=90
+        )
         self.label_head = QtWidgets.QLabel(client)
         self.label_head.setGeometry(QtCore.QRect(480, 732, 30, 20))
         font = QtGui.QFont()
@@ -641,6 +999,7 @@ class Ui_client(object):
         self.label_head.setStyleSheet("font: 10pt \"Arial\";")
         self.label_head.setAlignment(QtCore.Qt.AlignCenter)
         self.label_head.setObjectName("label_head")
+        # --- Speed control ---
         self.label_7 = QtWidgets.QLabel(client)
         self.label_7.setGeometry(QtCore.QRect(553, 555, 36, 16))
         font = QtGui.QFont()
@@ -665,120 +1024,45 @@ class Ui_client(object):
         self.label_speed.setStyleSheet("font: 10pt \"Arial\";")
         self.label_speed.setAlignment(QtCore.Qt.AlignCenter)
         self.label_speed.setObjectName("label_speed")
-        self.slider_speed = QtWidgets.QSlider(client)
-        self.slider_speed.setGeometry(QtCore.QRect(560, 572, 20, 160))
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.slider_speed.setFont(font)
-        self.slider_speed.setStyleSheet("font: 10pt \"Arial\";")
-        self.slider_speed.setMinimum(2)
-        self.slider_speed.setMaximum(10)
-        self.slider_speed.setProperty("value", 8)
-        self.slider_speed.setOrientation(QtCore.Qt.Vertical)
-        self.slider_speed.setObjectName("slider_speed")
+        self.slider_speed = self._fx.make_slider(
+            client, "slider_speed", (560, 572, 20, 160), QtCore.Qt.Vertical, minimum=2, maximum=10, value=8, set_font=True
+        )
+        # --- Power bars ---
         self.progress_Power1 = QtWidgets.QProgressBar(client)
         self.progress_Power1.setGeometry(QtCore.QRect(45, 705, 120, 20))
-        self.progress_Power1.setStyleSheet("QProgressBar::chunk {\n"
-"background-color:#08aaff;\n"
-"width: 20px;\n"
-"}\n"
-"QProgressBar {\n"
-"border-top: 2px solid grey;\n"
-"border-bottom: 2px solid grey;\n"
-"border-right: 2px solid grey;\n"
-"border-left: 2px solid grey;\n"
-"border-radius: 0px;\n"
-"background-color: #FFFFFF;\n"
-"}\n"
-"QProgressBar {\n"
-"text-align: center; \n"
-"color: rgb(0,0,0);\n"
-"}\n"
-"font: 10pt \"Arial\";")
+        # Style moved to external QSS
         self.progress_Power1.setProperty("value", 100)
         self.progress_Power1.setFormat("")
         self.progress_Power1.setObjectName("progress_Power1")
         self.progress_Power2 = QtWidgets.QProgressBar(client)
         self.progress_Power2.setGeometry(QtCore.QRect(45, 755, 120, 20))
-        self.progress_Power2.setStyleSheet("QProgressBar::chunk {\n"
-"background-color:#26fa03;\n"
-"width: 20px;\n"
-"}\n"
-"QProgressBar {\n"
-"border: 2px solid grey;\n"
-"border-radius: 0px;\n"
-"background-color: #FFFFFF;\n"
-"}\n"
-"\n"
-"\n"
-"QProgressBar {\n"
-"text-align: center; \n"
-"color: rgb(0,0,0);\n"
-"}\n"
-"font: 10pt \"Arial\";")
+        # Style moved to external QSS
         self.progress_Power2.setProperty("value", 100)
         self.progress_Power2.setFormat("")
         self.progress_Power2.setObjectName("progress_Power2")
+        # --- Radio buttons: Action Modes ---
         self.layoutWidget = QtWidgets.QWidget(client)
         self.layoutWidget.setGeometry(QtCore.QRect(25, 620, 121, 60))
         self.layoutWidget.setObjectName("layoutWidget")
         self.verticalLayout = QtWidgets.QVBoxLayout(self.layoutWidget)
         self.verticalLayout.setContentsMargins(0, 0, 0, 0)
         self.verticalLayout.setObjectName("verticalLayout")
-        self.ButtonActionMode1 = QtWidgets.QRadioButton(self.layoutWidget)
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.ButtonActionMode1.setFont(font)
-        self.ButtonActionMode1.setStyleSheet("font: 10pt \"Arial\";")
-        self.ButtonActionMode1.setObjectName("ButtonActionMode1")
+        self.ButtonActionMode1 = self._fx.make_radio(self.layoutWidget, "ButtonActionMode1")
         self.verticalLayout.addWidget(self.ButtonActionMode1)
-        self.ButtonActionMode2 = QtWidgets.QRadioButton(self.layoutWidget)
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.ButtonActionMode2.setFont(font)
-        self.ButtonActionMode2.setStyleSheet("font: 10pt \"Arial\";")
-        self.ButtonActionMode2.setObjectName("ButtonActionMode2")
+        self.ButtonActionMode2 = self._fx.make_radio(self.layoutWidget, "ButtonActionMode2")
         self.verticalLayout.addWidget(self.ButtonActionMode2)
+        # --- Radio buttons: Gait Modes ---
         self.layoutWidget1 = QtWidgets.QWidget(client)
         self.layoutWidget1.setGeometry(QtCore.QRect(30, 550, 111, 60))
         self.layoutWidget1.setObjectName("layoutWidget1")
         self.verticalLayout_2 = QtWidgets.QVBoxLayout(self.layoutWidget1)
         self.verticalLayout_2.setContentsMargins(0, 0, 0, 0)
         self.verticalLayout_2.setObjectName("verticalLayout_2")
-        self.ButtonGaitMode1 = QtWidgets.QRadioButton(self.layoutWidget1)
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.ButtonGaitMode1.setFont(font)
-        self.ButtonGaitMode1.setStyleSheet("font: 10pt \"Arial\";")
-        self.ButtonGaitMode1.setObjectName("ButtonGaitMode1")
+        self.ButtonGaitMode1 = self._fx.make_radio(self.layoutWidget1, "ButtonGaitMode1")
         self.verticalLayout_2.addWidget(self.ButtonGaitMode1)
-        self.ButtonGaitMode2 = QtWidgets.QRadioButton(self.layoutWidget1)
-        font = QtGui.QFont()
-        font.setFamily("Arial")
-        font.setPointSize(9)
-        font.setBold(False)
-        font.setItalic(False)
-        font.setWeight(50)
-        self.ButtonGaitMode2.setFont(font)
-        self.ButtonGaitMode2.setStyleSheet("font: 10pt \"Arial\";")
-        self.ButtonGaitMode2.setObjectName("ButtonGaitMode2")
+        self.ButtonGaitMode2 = self._fx.make_radio(self.layoutWidget1, "ButtonGaitMode2")
         self.verticalLayout_2.addWidget(self.ButtonGaitMode2)
+        # --- Status labels ---
         self.label_RasPi = QtWidgets.QLabel(client)
         self.label_RasPi.setGeometry(QtCore.QRect(10, 757, 30, 15))
         self.label_RasPi.setStyleSheet("font: 10pt \"Arial\";")
@@ -787,6 +1071,100 @@ class Ui_client(object):
         self.label_Load.setGeometry(QtCore.QRect(10, 707, 30, 15))
         self.label_Load.setStyleSheet("font: 10pt \"Arial\";")
         self.label_Load.setObjectName("label_Load")
+        # --- Z-ordering (readability: centralized) ---
+        self._z_order()
+
+        self.retranslateUi(client)
+        QtCore.QMetaObject.connectSlotsByName(client)
+
+    def retranslateUi(self, client):
+        _translate = QtCore.QCoreApplication.translate
+        client.setWindowTitle(_translate("client", "Freenove Client for Hexapod"))
+        self.Button_Buzzer.setText(_translate("client", "Buzzer"))
+        self.lineEdit_IP_Adress.setText(_translate("client", "192.168.1.121"))
+        self.Button_Connect.setText(_translate("client", "Connect"))
+        self.Button_Video.setText(_translate("client", "Open Video"))
+        self.Button_IMU.setText(_translate("client", "Balance"))
+        self.Button_Calibration.setText(_translate("client", "Calibration"))
+        self.Button_Sonic.setText(_translate("client", "Sonic"))
+        self.Button_LED.setText(_translate("client", "LED"))
+        self.label_6.setText(_translate("client", "Roll"))
+        self.label_attitude.setText(_translate("client", "(0,0)"))
+        self.label_roll.setText(_translate("client", "0"))
+        self.label_Y.setText(_translate("client", "15"))
+        self.label_Y_2.setText(_translate("client", "0"))
+        self.label_Y_3.setText(_translate("client", "-15"))
+        self.label_Y_4.setText(_translate("client", "(Yaw)"))
+        self.label_X.setText(_translate("client", "-15"))
+        self.label_X_2.setText(_translate("client", "0"))
+        self.label_X_3.setText(_translate("client", "15"))
+        self.label_X_4.setText(_translate("client", "(Pitch)"))
+        self.label_X_5.setText(_translate("client", "Attitude"))
+        self.label_sonic.setText(_translate("client", "Obstacle:0cm"))
+        self.label_Y_5.setText(_translate("client", "(X)"))
+        self.label_Y_6.setText(_translate("client", "-40"))
+        self.label_X_6.setText(_translate("client", "40"))
+        self.label_Y_7.setText(_translate("client", "0"))
+        self.label_X_7.setText(_translate("client", "0"))
+        self.label_Y_8.setText(_translate("client", "40"))
+        self.label_X_8.setText(_translate("client", "-40"))
+        self.label_position.setText(_translate("client", "(0,0)"))
+        self.label_X_9.setText(_translate("client", "(Y)"))
+        self.label_X_10.setText(_translate("client", "Position"))
+        self.label_Z.setText(_translate("client", "0"))
+        self.label_9.setText(_translate("client", "Z"))
+        self.Button_Face_ID.setText(_translate("client", "Face ID"))
+        self.Button_Face_Recognition.setText(_translate("client", "Face Recog"))
+        self.Button_Relax.setText(_translate("client", "Relax"))
+        self.Button_Take_Photo.setText(_translate("client", "Take photo"))
+        self.label_head_1.setText(_translate("client", "90"))
+        self.label_10.setText(_translate("client", "Head"))
+        self.label_8.setText(_translate("client", "Head"))
+        self.label_head.setText(_translate("client", "90"))
+        self.label_7.setText(_translate("client", "Speed"))
+        self.label_speed.setText(_translate("client", "8"))
+        self.ButtonActionMode1.setText(_translate("client", "Action Mode 1"))
+        self.ButtonActionMode2.setText(_translate("client", "Action Mode 2"))
+        self.ButtonGaitMode1.setText(_translate("client", "Gait Mode 1"))
+        self.ButtonGaitMode2.setText(_translate("client", "Gait Mode 2"))
+        self.label_RasPi.setText(_translate("client", "RasPi"))
+        self.label_Load.setText(_translate("client", "Load"))
+
+    # -------------------------
+    # Internal helpers (readability only; no behavior change)
+    # -------------------------
+    def _init_fonts(self):
+        """Prepare shared fonts/styles to reduce duplication in setupUi.
+        Note: Existing widgets still set their own fonts as generated; this
+        helper is future-facing for consistency and readability.
+        """
+        # Common 9pt Arial used throughout
+        self._font9 = QtGui.QFont()
+        self._font9.setFamily("Arial")
+        self._font9.setPointSize(9)
+        self._font9.setBold(False)
+        self._font9.setItalic(False)
+        self._font9.setWeight(50)
+
+        # Common button style used by all QPushButtons
+        self._btn_style = "font: 10pt \"Arial\";"
+
+    def _init_geo(self):
+        """Central geometry mapping for key buttons to avoid magic numbers in code.
+        Values exactly match the original UI positions.
+        """
+        self._geo = {
+            "Button_LED": (750, 355, 90, 30),
+            "Button_IMU": (630, 425, 90, 30),
+            "Button_Sonic": (880, 425, 90, 30),
+            "Button_Buzzer": (750, 425, 90, 30),
+            "Button_Take_Photo": (750, 470, 90, 30),
+        }
+
+    
+
+    def _z_order(self):
+        """Centralize widget stacking order to keep setupUi terse."""
         self.Video.raise_()
         self.Button_Buzzer.raise_()
         self.lineEdit_IP_Adress.raise_()
@@ -841,58 +1219,4 @@ class Ui_client(object):
         self.label_RasPi.raise_()
         self.label_Load.raise_()
         self.progress_Power1.raise_()
-
-        self.retranslateUi(client)
-        QtCore.QMetaObject.connectSlotsByName(client)
-
-    def retranslateUi(self, client):
-        _translate = QtCore.QCoreApplication.translate
-        client.setWindowTitle(_translate("client", "Freenove Client for Hexapod"))
-        self.Button_Buzzer.setText(_translate("client", "Buzzer"))
-        self.lineEdit_IP_Adress.setText(_translate("client", "192.168.1.121"))
-        self.Button_Connect.setText(_translate("client", "Connect"))
-        self.Button_Video.setText(_translate("client", "Open Video"))
-        self.Button_IMU.setText(_translate("client", "Balance"))
-        self.Button_Calibration.setText(_translate("client", "Calibration"))
-        self.Button_Sonic.setText(_translate("client", "Sonic"))
-        self.Button_LED.setText(_translate("client", "LED"))
-        self.label_6.setText(_translate("client", "Roll"))
-        self.label_attitude.setText(_translate("client", "(0,0)"))
-        self.label_roll.setText(_translate("client", "0"))
-        self.label_Y.setText(_translate("client", "15"))
-        self.label_Y_2.setText(_translate("client", "0"))
-        self.label_Y_3.setText(_translate("client", "-15"))
-        self.label_Y_4.setText(_translate("client", "(Yaw)"))
-        self.label_X.setText(_translate("client", "-15"))
-        self.label_X_2.setText(_translate("client", "0"))
-        self.label_X_3.setText(_translate("client", "15"))
-        self.label_X_4.setText(_translate("client", "(Pitch)"))
-        self.label_X_5.setText(_translate("client", "Attitude"))
-        self.label_sonic.setText(_translate("client", "Obstacle:0cm"))
-        self.label_Y_5.setText(_translate("client", "(X)"))
-        self.label_Y_6.setText(_translate("client", "-40"))
-        self.label_X_6.setText(_translate("client", "40"))
-        self.label_Y_7.setText(_translate("client", "0"))
-        self.label_X_7.setText(_translate("client", "0"))
-        self.label_Y_8.setText(_translate("client", "40"))
-        self.label_X_8.setText(_translate("client", "-40"))
-        self.label_position.setText(_translate("client", "(0,0)"))
-        self.label_X_9.setText(_translate("client", "(Y)"))
-        self.label_X_10.setText(_translate("client", "Position"))
-        self.label_Z.setText(_translate("client", "0"))
-        self.label_9.setText(_translate("client", "Z"))
-        self.Button_Face_ID.setText(_translate("client", "Face ID"))
-        self.Button_Face_Recognition.setText(_translate("client", "Face Recog"))
-        self.Button_Relax.setText(_translate("client", "Relax"))
-        self.label_head_1.setText(_translate("client", "90"))
-        self.label_10.setText(_translate("client", "Head"))
-        self.label_8.setText(_translate("client", "Head"))
-        self.label_head.setText(_translate("client", "90"))
-        self.label_7.setText(_translate("client", "Speed"))
-        self.label_speed.setText(_translate("client", "8"))
-        self.ButtonActionMode1.setText(_translate("client", "Action Mode 1"))
-        self.ButtonActionMode2.setText(_translate("client", "Action Mode 2"))
-        self.ButtonGaitMode1.setText(_translate("client", "Gait Mode 1"))
-        self.ButtonGaitMode2.setText(_translate("client", "Gait Mode 2"))
-        self.label_RasPi.setText(_translate("client", "RasPi"))
-        self.label_Load.setText(_translate("client", "Load"))
+        self.Button_Take_Photo.raise_()

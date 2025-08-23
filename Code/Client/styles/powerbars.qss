@@ -1,0 +1,20 @@
+/* Shared progress bar appearance */
+QProgressBar {
+  border: 2px solid grey;
+  border-radius: 0px;
+  background-color: #FFFFFF;
+  text-align: center;
+  color: rgb(0,0,0);
+  font: 10pt "Arial";
+}
+
+/* Per-bar chunk colors (preserving previous UI) */
+QProgressBar#progress_Power1::chunk {
+  background-color:rgb(0, 123, 184);
+  width: 20px;
+}
+
+QProgressBar#progress_Power2::chunk {
+  background-color: #26fa03;
+  width: 20px;
+}
