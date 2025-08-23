@@ -947,14 +947,14 @@ class calibrationWindow(QMainWindow,Ui_calibration):
                 self.point[3][1]=self.y
                 self.point[3][2]=self.z
             elif self.leg== "five":
-                self.five_x.setText(str(self.x))
+                self.six_x.setText(str(self.x))
                 self.five_y.setText(str(self.y))
                 self.five_z.setText(str(self.z))
                 self.point[4][0]=self.x
                 self.point[4][1]=self.y
                 self.point[4][2]=self.z
             elif self.leg== "six":
-                self.six_x.setText(str(self.x))
+                self.five_x.setText(str(self.x))
                 self.six_y.setText(str(self.y))
                 self.six_z.setText(str(self.z))
                 self.point[5][0]=self.x
@@ -973,10 +973,10 @@ class calibrationWindow(QMainWindow,Ui_calibration):
             self.four_x.setText(str(data[3][0]))
             self.four_y.setText(str(data[3][1]))
             self.four_z.setText(str(data[3][2]))
-            self.five_x.setText(str(data[4][0]))
+            self.six_x.setText(str(data[4][0]))
             self.five_y.setText(str(data[4][1]))
             self.five_z.setText(str(data[4][2]))
-            self.six_x.setText(str(data[5][0]))
+            self.five_x.setText(str(data[5][0]))
             self.six_y.setText(str(data[5][1]))
             self.six_z.setText(str(data[5][2]))
     def get_point(self):
@@ -997,11 +997,11 @@ class calibrationWindow(QMainWindow,Ui_calibration):
             self.y = int(self.four_y.text())
             self.z = int(self.four_z.text())
         elif self.leg== "five":
-            self.x = int(self.five_x.text())
+            self.x = int(self.six_x.text())
             self.y = int(self.five_y.text())
             self.z = int(self.five_z.text())
         elif self.leg== "six":
-            self.x = int(self.six_x.text())
+            self.x = int(self.five_x.text())
             self.y = int(self.six_y.text())
             self.z = int(self.six_z.text())
     def save(self):
@@ -1024,11 +1024,11 @@ class calibrationWindow(QMainWindow,Ui_calibration):
         self.point[3][1] = self.four_y.text()
         self.point[3][2] = self.four_z.text()
 
-        self.point[4][0] = self.five_x.text()
+        self.point[4][0] = self.six_x.text()
         self.point[4][1] = self.five_y.text()
         self.point[4][2] = self.five_z.text()
 
-        self.point[5][0] = self.six_x.text()
+        self.point[5][0] = self.five_x.text()
         self.point[5][1] = self.six_y.text()
         self.point[5][2] = self.six_z.text()
 
