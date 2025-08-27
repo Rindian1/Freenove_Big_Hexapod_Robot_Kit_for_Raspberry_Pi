@@ -498,7 +498,7 @@ class Ui_calibration(object):
         self.five_x.setFont(font)
         self.five_x.setStyleSheet("font: 10pt \"Arial\";")
         self.five_x.setAlignment(QtCore.Qt.AlignCenter)
-        self.five_x.setObjectName("five_x")
+        self.five_x.setObjectName("six_x")
         self.five_z = QtWidgets.QLineEdit(calibration)
         self.five_z.setGeometry(QtCore.QRect(285, 145, 45, 20))
         font = QtGui.QFont()
@@ -646,7 +646,7 @@ class Ui_calibration(object):
         self.six_x.setFont(font)
         self.six_x.setStyleSheet("font: 10pt \"Arial\";")
         self.six_x.setAlignment(QtCore.Qt.AlignCenter)
-        self.six_x.setObjectName("six_x")
+        self.six_x.setObjectName("five_x")
 
         self.retranslateUi(calibration)
         QtCore.QMetaObject.connectSlotsByName(calibration)
