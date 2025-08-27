@@ -8,6 +8,7 @@ class  Face:
         self.recognizer.read('Face/face.yml')
         self.detector = cv2.CascadeClassifier("Face/haarcascade_frontalface_default.xml")
         self.name = self.Read_from_txt('Face/name')
+
     def Read_from_txt(self, filename):
         file1 = open(filename + ".txt", "r")
         list_row = file1.readlines()
@@ -29,6 +30,7 @@ class  Face:
                 file2.write('\t')
             file2.write('\n')
         file2.close()
+        
     def getImagesAndLabels(self,path='Face'):
         imagePaths = [os.path.join(path,f) for f in os.listdir(path)]
         faceSamples=[]

@@ -1,0 +1,53 @@
+{
+    "version": "1.0",
+    "robot": {
+        "name": "Freenove Hexapod",
+        "version": "2.0",
+        "default_leg_angles": {
+            "coxa": 0,
+            "femur": 45,
+            "tibia": -90
+        },
+        "leg_offsets": [
+            {"coxa": 0, "femur": 0, "tibia": 0},
+            {"coxa": 0, "femur": 0, "tibia": 0},
+            {"coxa": 0, "femur": 0, "tibia": 0},
+            {"coxa": 0, "femur": 0, "tibia": 0},
+            {"coxa": 0, "femur": 0, "tibia": 0},
+            {"coxa": 0, "femur": 0, "tibia": 0}
+        ],
+        "servo_limits": {
+            "coxa": {"min": 0, "max": 180, "default": 90},
+            "femur": {"min": 0, "max": 180, "default": 90},
+            "tibia": {"min": 0, "max": 180, "default": 90}
+        }
+    },
+    "movement": {
+        "default_speed": 50,
+        "max_speed": 100,
+        "min_speed": 10,
+        "step_height": 30,
+        "step_length": 50,
+        "body_height": 100,
+        "gait_cycle_time": 1000,
+        "stability_margin": 10
+    },
+    "safety": {
+        "max_continuous_current": 2.0,
+        "overtemp_threshold": 60.0,
+        "undervoltage_threshold": 10.5,
+        "emergency_stop_delay": 1000
+    },
+    "network": {
+        "default_host": "0.0.0.0",
+        "default_port": 5000,
+        "timeout": 5.0,
+        "reconnect_interval": 5
+    },
+    "startup": {
+        "enable_self_test": true,
+        "enable_servo_calibration": false,
+        "enable_sensor_init": true,
+        "enable_motor_test": false
+    }
+}

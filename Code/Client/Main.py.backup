@@ -446,50 +446,98 @@ class MyWindow(QMainWindow,Ui_client):
         self.client.send_data(command)
     def position(self):
         x = self.map((self.drawpoint[1][0]-800), -100, 100, -40, 40)
-        y = self.map((650-self.drawpoint[1][1]), -100, 100, -40, 40)
-        z=self.slider_Z.value()
-        command = cmd.CMD_POSITION+ "#" + str(round(x)) + "#" + str(round(y)) + "#" + str(round(z)) + '\n'
         print(command)
         self.client.send_data(command)
-    def closeEvent(self,event):
-        try:
-            self.timer.stop()
-            self.timer_power.stop()
-        except Exception as e:
-            print(e)
-        try:
-            stop_thread(self.videoThread)
-        except Exception as e:
-            print(e)
-        try:
-            stop_thread(self.instructionThread)
-        except Exception as e:
-            print(e)
+    except Exception as e:
+        print(e)
+def attitude(self):
+    r = self.map((self.drawpoint[0][0]-800), -100, 100, -15, 15)
+    p = self.map((180-self.drawpoint[0][1]), -100, 100, -15, 15)
+    y=self.slider_roll.value()
+    command = cmd.CMD_ATTITUDE+ "#" + str(round(r)) + "#" + str(round(p)) + "#" + str(round(y)) + '\n'
+    print(command)
+    self.client.send_data(command)
+def position(self):
+    x = self.map((self.drawpoint[1][0]-800), -100, 100, -40, 40)
+    y = self.map((650-self.drawpoint[1][1]), -100, 100, -40, 40)
+    z=self.slider_Z.value()
+    command = cmd.CMD_POSITION+ "#" + str(round(x)) + "#" + str(round(y)) + "#" + str(round(z)) + '\n'
+    print(command)
+    self.client.send_data(command)
+def closeEvent(self, event: QCloseEvent) -> None:
+    """Handle application close event safely.
+    
+    Args:
+        event: The close event
+    """
+    try:
+        self._stop_timers()
+        self._stop_threads()
         self.client.turn_off_client()
         QCoreApplication.instance().quit()
-        #os._exit(0)
+    except Exception as e:
+        self._log_error(f"Error during shutdown: {str(e)}")
+        event.ignore()  # Prevent window from closing if cleanup fails
+        return
+            value: The value to restrict
+            min_val: Minimum allowed value
+            max_val: Maximum allowed value
+            
+        Returns:
+            The restricted value
+            
+        Raises:
+            ValueError: If min_val > max_val
+        """
+        if min_val > max_val:
+            raise ValueError(f"min_val ({min_val}) must be less than or equal to max_val ({max_val})")
+        return max(min_val, min(max_val, value))
 
-    def restriction(self,var,v_min,v_max):
-        if var < v_min:
-            return v_min
-        elif var > v_max:
-            return v_max
-        else:
-            return var
-
-    def video(self):
-        if self.Button_Video.text() == 'Open Video':
-            self.timer.start(10)
-            self.Button_Video.setText('Close Video')
-        else:
-            self.timer.stop()
+    def video(self) -> None:
+        """Toggle video streaming on/off."""
+        try:
+            if self.Button_Video.text() == 'Open Video':
+                if not self.timer.isActive():
+                    self.timer.start(10)
+                    self.Button_Video.setText('Close Video')
+            else:
+                if self.timer.isActive():
+                    self.timer.stop()
+                self.Button_Video.setText('Open Video')
+        except Exception as e:
+            self._log_error(f"Error toggling video: {str(e)}")
+            self.Button_Video.setChecked(False)
             self.Button_Video.setText('Open Video')
 
-    def power(self):
+    def power(self) -> None:
+        """Request and update power status from the robot."""
         try:
-            command = cmd.CMD_POWER + '\n'
+            if not self.client.tcp_flag:
+                self._log_error("Not connected to server"
+                               " - cannot get power status")
+                return
+                
+            command = f"{cmd.CMD_POWER}\n"
             self.client.send_data(command)
-            self.progress_Power1.setFormat(str(self.power_value[0])+"V")
+            
+            # Update UI with current power value if available
+            if hasattr(self, 'power_value') and self.power_value:
+                try:
+                    voltage = float(self.power_value[0])
+                    self.progress_Power1.setFormat(f"{voltage:.1f}V")
+                    
+                    # Optional: Add visual warning for low battery
+                    if voltage < 6.5:  # Example threshold
+                        self.progress_Power1.setStyleSheet(
+                            "QProgressBar::chunk { background-color: red; }")
+                    else:
+                        self.progress_Power1.setStyleSheet("")  # Reset to default
+                        
+                except (ValueError, IndexError) as e:
+                    self._log_error(f"Invalid power value format: {self.power_value}")
+                    
+        except Exception as e:
+            self._log_error(f"Error getting power status: {str(e)}")
             self.progress_Power2.setFormat(str(self.power_value[1]) + "V")
             self.progress_Power1.setValue(self.restriction(round((float(self.power_value[0]) - 5.00) / 3.40 * 100), 0, 100))
             self.progress_Power2.setValue(self.restriction(round((float(self.power_value[1]) - 7.00) / 1.40 * 100), 0, 100))

@@ -1,0 +1,85 @@
+{
+    "version": "1.0",
+    "sequence": [
+        {
+            "id": "initialize_hardware",
+            "name": "Initialize Hardware",
+            "description": "Initialize all hardware components",
+            "type": "function",
+            "function": "initialize_hardware",
+            "timeout": 5000,
+            "retry_attempts": 3,
+            "retry_delay": 1000,
+            "required": true
+        },
+        {
+            "id": "servo_calibration",
+            "name": "Servo Calibration",
+            "description": "Calibrate servo motors to neutral position",
+            "type": "function",
+            "function": "calibrate_servos",
+            "timeout": 10000,
+            "required": true,
+            "config": {
+                "calibration_mode": "neutral",
+                "verify_voltage": true
+            }
+        },
+        {
+            "id": "sensor_initialization",
+            "name": "Sensor Initialization",
+            "description": "Initialize and test all sensors",
+            "type": "function",
+            "function": "initialize_sensors",
+            "timeout": 3000,
+            "required": false,
+            "config": {
+                "sensors": ["imu", "ultrasonic", "battery"]
+            }
+        },
+        {
+            "id": "self_test",
+            "name": "Self Test",
+            "description": "Run system self-test procedures",
+            "type": "function",
+            "function": "run_self_test",
+            "timeout": 10000,
+            "required": true,
+            "config": {
+                "test_servos": true,
+                "test_motors": true,
+                "test_sensors": true
+            }
+        },
+        {
+            "id": "stand_up",
+            "name": "Stand Up",
+            "description": "Move to standing position",
+            "type": "movement",
+            "movement_type": "pose",
+            "movement_name": "stand",
+            "timeout": 3000,
+            "required": true
+        },
+        {
+            "id": "ready_state",
+            "name": "Ready State",
+            "description": "System is ready for operation",
+            "type": "status",
+            "message": "System ready",
+            "timeout": 1000,
+            "required": true
+        }
+    ],
+    "error_handling": {
+        "on_failure": "stop",
+        "notify_user": true,
+        "log_errors": true,
+        "retry_strategy": "exponential_backoff"
+    },
+    "notifications": {
+        "startup_begin": "Starting system initialization...",
+        "startup_complete": "System initialization complete. Ready for operation.",
+        "startup_failed": "System initialization failed. Please check logs for details."
+    }
+}
