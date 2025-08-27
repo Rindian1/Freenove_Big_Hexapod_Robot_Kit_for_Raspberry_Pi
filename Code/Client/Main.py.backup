@@ -23,6 +23,9 @@ class MyWindow(QMainWindow,Ui_client):
         # Camera recorder for snapshots
         self.camera_recorder = CameraRecorder(output_dir='Captures', video_label=self.Video)
 
+        # Default buzzer duration (ms) for short beeps
+        self.buzzer_duration_ms = 3000
+
         self.client=Client()
         file = open('IP.txt', 'r')
         self.lineEdit_IP_Adress.setText(str(file.readline()))
@@ -772,7 +775,7 @@ def closeEvent(self, event: QCloseEvent) -> None:
             except Exception as e:
                 print(e)
             # Delay slightly so the beep precedes the shutter
-            QtCore.QTimer.singleShot(120, self._capture_photo_and_buzz_off)
+            QtCore.QTimer.singleShot(self.buzzer_duration_ms, self._capture_photo_and_buzz_off)
         except Exception as e:
             print(e)
 
