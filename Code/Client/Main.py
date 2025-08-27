@@ -1143,6 +1143,7 @@ class ledWindow(QMainWindow,Ui_led):
                 self.client.send_data(command)
         elif index.text() == "Mode 4":
             if index.isChecked() == True:
+                # Little rat
                 command = cmd.CMD_LED_MOD + '#' + '4' + '\n'
                 self.client.send_data(command)
         elif index.text() == "Mode 5":
