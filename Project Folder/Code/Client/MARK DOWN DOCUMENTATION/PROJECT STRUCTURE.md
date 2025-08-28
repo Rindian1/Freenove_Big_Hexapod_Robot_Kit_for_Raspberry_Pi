@@ -6,7 +6,7 @@ Control software for the Hexapod Robot, featuring a user-friendly interface for 
 
 ```
 Client/
-├── src/                          # Source code
+├── src/                         # Source code
 │   ├── __init__.py
 │   ├── main.py                  # Application entry point
 │   ├── config/                  # Configuration files
