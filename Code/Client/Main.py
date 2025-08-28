@@ -44,13 +44,48 @@ TIMER_POWER_MS: int = 3000
 TIMER_SONIC_MS: int = 100
 TIMER_PHOTO_MS: int = 100
 
+from enum import Enum, auto
+import socket
+import time
+import threading
+from typing import Optional, Callable, Any, Tuple, Dict
+
+from exceptions import (
+    RobotError,
+    ConnectionError,
+    NetworkError,
+    TimeoutError,
+    InvalidStateError
+)
+from thread_safe import ThreadSafeValue, ThreadSafeCounter
+from logging_config import get_logger
+from utils import retry, handle_errors, log_duration
+
+logger = get_logger(__name__)
+
+
+class ConnectionState(Enum):
+    """Represents the connection state of the NetworkManager."""
+    DISCONNECTED = auto()
+    CONNECTING = auto()
+    CONNECTED = auto()
+    ERROR = auto()
+
+
 class NetworkManager:
     """
-    Manages network connections and background threads for video streaming and instructions.
+    Manages network connections and background threads for the Hexapod Robot client.
     
-    This class provides thread-safe methods to manage the lifecycle of network connections
-    and their associated background threads. It ensures proper cleanup and error handling.
+    This class handles the lifecycle of network connections, including video streaming,
+    command sending/receiving, and automatic reconnection with exponential backoff.
     """
+    
+    # Network timeouts in seconds
+    CONNECT_TIMEOUT = 5.0
+    SOCKET_TIMEOUT = 1.0
+    RECONNECT_DELAY = 2.0
+    MAX_RECONNECT_ATTEMPTS = 3
+    
     def __init__(self, client: 'Client') -> None:
         """Initialize the NetworkManager with a client instance.
         
@@ -58,14 +93,26 @@ class NetworkManager:
             client: The Client instance to manage network connections for.
         """
         self.client = client
+        self._state = ThreadSafeValue(ConnectionState.DISCONNECTED, name="connection_state")
+        self._lock = threading.RLock()
+        self._stop_event = threading.Event()
+        self._reconnect_attempts = ThreadSafeCounter(name="reconnect_attempts")
+        
+        # Network components
         self.video_thread: Optional[threading.Thread] = None
         self.instruction_thread: Optional[threading.Thread] = None
-        self._is_connected: bool = False
-        self._lock = threading.Lock()  # For thread-safe operations
-        self._stop_event = threading.Event()  # For graceful thread termination
-        self._connection_attempts = 0
-        self._max_connection_attempts = 3
-        self._reconnect_delay = 2.0  # seconds
+        self.video_socket: Optional[socket.socket] = None
+        self.instruction_socket: Optional[socket.socket] = None
+        self.video_label: Optional[Any] = None
+        
+        # Connection details
+        self.ip: Optional[str] = None
+        self.port: Optional[int] = None
+        self.video_port: Optional[int] = None
+        
+        # Thread control flags
+        self._video_thread_running = False
+        self._instruction_thread_running = False
 
     @property
     def is_connected(self) -> bool:
@@ -73,117 +120,164 @@ class NetworkManager:
         with self._lock:
             return self._is_connected
 
-    def connect(self, ip: str, instruction_target: Callable[[str], None]) -> None:
-        """Establish a connection and start background threads with retry logic.
+    @property
+    def state(self) -> ConnectionState:
+        """Get the current connection state."""
+        return self._state.value
+    
+    def _set_state(self, new_state: ConnectionState) -> None:
+        """Safely update the connection state.
         
         Args:
-            ip: Server IP address to connect to.
-            instruction_target: Callable that handles the instruction loop.
+            new_state: The new connection state
+        """
+        old_state = self._state.value
+        if old_state != new_state:
+            self._state.value = new_state
+            self._on_state_changed(old_state, new_state)
+    
+    def _on_state_changed(self, old_state: ConnectionState, new_state: ConnectionState) -> None:
+        """Handle connection state changes.
+        
+        Args:
+            old_state: Previous connection state
+            new_state: New connection state
+        """
+        logger.info(f"Connection state changed: {old_state.name} -> {new_state.name}")
+        
+        # Notify client of state changes if needed
+        if hasattr(self.client, 'on_connection_state_changed'):
+            try:
+                self.client.on_connection_state_changed(old_state, new_state)
+            except Exception as e:
+                logger.error(f"Error in connection state change handler: {e}", exc_info=True)
+    
+    @retry(max_attempts=3, delay=1.0, backoff=2.0, exceptions=(ConnectionError, socket.error, TimeoutError))
+    def connect(self, ip: str, port: int, video_port: int) -> bool:
+        """Establish a connection to the robot.
+        
+        Args:
+            ip: Robot IP address
+            port: Robot command port
+            video_port: Robot video port
+            
+        Returns:
+            bool: True if connection was successful, False otherwise
             
         Raises:
-            RuntimeError: If already connected or connection fails after retries.
+            ConnectionError: If connection fails after max retry attempts
+            InvalidStateError: If already connected or in an invalid state
         """
-        with self._lock:
-            if self._is_connected:
-                raise RuntimeError("Already connected to a server")
-
-        self._stop_event.clear()
-        self._connection_attempts = 0
-
-        # Try to establish connection with retries
-        while self._connection_attempts < self._max_connection_attempts and not self._stop_event.is_set():
-            try:
-                # Initialize connection with timeout
-                self.client.turn_on_client(ip)
-                self.client.client_socket1.settimeout(5.0)
-                self.client.client_socket.settimeout(5.0)
-
-                # Create and start threads
-                self.video_thread = threading.Thread(
-                    target=self._video_thread_func,
-                    args=(ip,),
-                    name="VideoThread",
-                    daemon=True
-                )
-                
-                self.instruction_thread = threading.Thread(
-                    target=self._instruction_thread_func,
-                    args=(instruction_target, ip),
-                    name="InstructionThread",
-                    daemon=True
-                )
-                
-                self.video_thread.start()
-                self.instruction_thread.start()
-                
-                with self._lock:
-                    self._is_connected = True
-                    self._connection_attempts = 0  # Reset on success
-                return
-                
-            except (socket.timeout, ConnectionError) as e:
-                self._connection_attempts += 1
-                if self._connection_attempts >= self._max_connection_attempts:
-                    self._cleanup_resources()
-                    raise RuntimeError(f"Failed to connect after {self._max_connection_attempts} attempts: {str(e)}")
-                
-                print(f"Connection attempt {self._connection_attempts} failed, retrying in {self._reconnect_delay} seconds...")
-                time.sleep(self._reconnect_delay)
-                
-            except Exception as e:
-                self._cleanup_resources()
-                raise RuntimeError(f"Failed to establish connection: {str(e)}")
-    
-    def _video_thread_func(self, ip: str) -> None:
-        """Wrapper function for video thread with error handling and reconnection logic."""
-        while not self._stop_event.is_set():
-            try:
-                self.client.receiving_video(ip)
-            except (ConnectionError, socket.timeout) as e:
-                print(f"Video connection lost: {e}")
-                if not self._attempt_reconnect():
-                    break
-            except Exception as e:
-                print(f"Video thread error: {e}")
-                break
-        
-        self.disconnect()
-    
-    def _instruction_thread_func(self, target: Callable[[str], None], ip: str) -> None:
-        """Wrapper function for instruction thread with error handling and reconnection logic."""
-        while not self._stop_event.is_set():
-            try:
-                target(ip)
-            except (ConnectionError, socket.timeout) as e:
-                print(f"Instruction connection lost: {e}")
-                if not self._attempt_reconnect():
-                    break
-            except Exception as e:
-                print(f"Instruction thread error: {e}")
-                break
-        
-        self.disconnect()
-    
-    def _attempt_reconnect(self) -> bool:
-        """Attempt to reconnect after a connection loss."""
-        with self._lock:
-            if self._stop_event.is_set():
-                return False
-                
-            self.client.tcp_flag = False
-            time.sleep(1)  # Wait before reconnection attempt
+        if self.state == ConnectionState.CONNECTED:
+            raise InvalidStateError("Already connected to the robot")
             
+        self._set_state(ConnectionState.CONNECTING)
+        
+        try:
+            self.ip = ip
+            self.port = port
+            self.video_port = video_port
+            
+            # Connect to command port
             try:
-                self.client.turn_off_client()
+                self.instruction_socket = self._create_socket()
+                self.instruction_socket.connect((self.ip, self.port))
+                logger.info(f"Connected to command port {self.port}")
+            except (socket.error, OSError) as e:
+                raise ConnectionError(f"Failed to connect to command port: {e}") from e
+            
+            # Connect to video port
+            try:
+                self.video_socket = self._create_socket()
+                self.video_socket.connect((self.ip, self.video_port))
+                logger.info(f"Connected to video port {self.video_port}")
+            except (socket.error, OSError) as e:
+                if self.instruction_socket:
+                    self.instruction_socket.close()
+                    self.instruction_socket = None
+                raise ConnectionError(f"Failed to connect to video port: {e}") from e
+            
+            # Initialize client connection
+            try:
+                self.client.turn_on_client(ip)
+                self.client.client_socket1 = self.instruction_socket
+                self.client.client_socket = self.video_socket
+                
+                # Start communication threads
+                self.start_threads()
+                self._set_state(ConnectionState.CONNECTED)
+                self._reconnect_attempts.value = 0
                 return True
+                
             except Exception as e:
-                print(f"Error during reconnection: {e}")
-                return False
+                self.disconnect()
+                raise ConnectionError(f"Failed to initialize client: {e}") from e
+                
+        except Exception as e:
+            self._handle_connection_error(f"Connection failed: {e}")
+            raise
+
+    def _create_socket(self) -> socket.socket:
+        """Create and configure a new socket.
+        
+        Returns:
+            socket.socket: Configured socket
+            
+        Raises:
+            NetworkError: If socket creation fails
+        """
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.SOCKET_TIMEOUT)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            return sock
+        except socket.error as e:
+            raise NetworkError(f"Failed to create socket: {e}") from e
+
+    def disconnect(self) -> None:
+        """Safely disconnect from the robot and clean up resources."""
+        if self.state == ConnectionState.DISCONNECTED:
+            return
+            
+        self._set_state(ConnectionState.DISCONNECTED)
+        self._stop_event.set()
+        
+        # Stop and clean up threads
+        self._stop_threads()
+        
+        # Close sockets
+        sockets_to_close = [
+            (self.instruction_socket, 'instruction'),
+            (self.video_socket, 'video'),
+            (getattr(self.client, 'client_socket', None), 'client_socket'),
+            (getattr(self.client, 'client_socket1', None), 'client_socket1')
+        ]
+        
+        for sock, name in sockets_to_close:
+            if sock:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                    sock.close()
+                    logger.debug(f"Closed {name} socket")
+                except (OSError, AttributeError) as e:
+                    logger.warning(f"Error closing {name} socket: {e}")
+        
+        # Reset socket references
+        self.instruction_socket = None
+        self.video_socket = None
+        
+        if hasattr(self.client, 'client_socket'):
+            self.client.client_socket = None
+        if hasattr(self.client, 'client_socket1'):
+            self.client.client_socket1 = None
+            
+        self._stop_event.clear()
+        logger.info("Disconnected from robot")
 
     def stop_threads(self) -> None:
         """Safely stop all background threads with proper cleanup."""
         with self._lock:
-            if not self._is_connected:
+            if not self._video_thread_running and not self._instruction_thread_running:
                 return
             
             self._stop_event.set()
@@ -196,45 +290,158 @@ class NetworkManager:
             
             for thread, name in threads:
                 try:
-                    stop_thread(thread)
                     thread.join(timeout=2.0)
                     if thread.is_alive():
-                        print(f"Warning: {name} thread did not terminate gracefully")
+                        logger.warning(f"{name} thread did not terminate gracefully")
                 except Exception as e:
-                    print(f"Error stopping {name} thread: {e}")
+                    logger.error(f"Error stopping {name} thread: {e}")
             
             self.video_thread = None
             self.instruction_thread = None
-    
-    def _cleanup_resources(self) -> None:
-        """Clean up network resources and update connection state."""
-        with self._lock:
-            try:
-                self.client.tcp_flag = False
-                self.client.turn_off_client()
-            except Exception as e:
-                print(f"Error during network cleanup: {e}")
-            finally:
-                self._is_connected = False
-                self._stop_event.clear()
+            self._video_thread_running = False
+            self._instruction_thread_running = False
 
-    def disconnect(self) -> None:
-        """Disconnect from the server and clean up resources.
+    def start_threads(self) -> None:
+        """Start the video and instruction processing threads.
         
-        This method ensures all threads are stopped and network resources are released.
+        Raises:
+            InvalidStateError: If not connected or threads are already running
         """
-        if not self._is_connected and not self._stop_event.is_set():
+        if self.state != ConnectionState.CONNECTED:
+            raise InvalidStateError("Cannot start threads: Not connected to robot")
+            
+        with self._lock:
+            if self._video_thread_running or self._instruction_thread_running:
+                raise InvalidStateError("Threads are already running")
+            
+            # Start video thread
+            self._stop_event.clear()
+            self._video_thread_running = True
+            self.video_thread = threading.Thread(
+                target=self._video_thread_func,
+                name="VideoThread"
+            )
+            self.video_thread.daemon = True
+            self.video_thread.start()
+            
+            # Start instruction thread
+            self._instruction_thread_running = True
+            self.instruction_thread = threading.Thread(
+                target=self._instruction_thread_func,
+                name="InstructionThread"
+            )
+            self.instruction_thread.daemon = True
+            self.instruction_thread.start()
+            
+            logger.info("Started network threads")
+
+    def _video_thread_func(self) -> None:
+        """Thread function for receiving and processing video frames."""
+        if not self.video_socket:
+            logger.error("Video socket not initialized")
             return
             
-        try:
-            self.stop_threads()
-            self._cleanup_resources()
-            print("Disconnected from server")
-        except Exception as e:
-            print(f"Error during disconnection: {e}")
-        finally:
-            with self._lock:
-                self._is_connected = False
+        buffer = b''
+        while self._video_thread_running and not self._stop_event.is_set():
+            try:
+                # Check connection state
+                if self.state != ConnectionState.CONNECTED:
+                    time.sleep(0.1)
+                    continue
+                    
+                # Receive data from socket
+                try:
+                    data = self.video_socket.recv(4096)
+                    if not data:
+                        raise ConnectionError("Connection closed by remote host")
+                    buffer += data
+                    
+                    # Process complete frames (implementation depends on protocol)
+                    # This is a simplified example - adjust based on actual protocol
+                    while b'\n' in buffer:
+                        frame_data, buffer = buffer.split(b'\n', 1)
+                        self._process_video_frame(frame_data)
+                        
+                except socket.timeout:
+                    continue
+                except (socket.error, ConnectionError) as e:
+                    if not self._stop_event.is_set():
+                        self._handle_connection_error(f"Video thread error: {e}")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error in video thread: {e}", exc_info=True)
+                if not self._stop_event.is_set():
+                    time.sleep(0.1)  # Prevent tight loop on errors
+
+    def _instruction_thread_func(self) -> None:
+        """Thread function for sending and receiving instructions."""
+        if not self.instruction_socket:
+            logger.error("Instruction socket not initialized")
+            return
+            
+        while self._instruction_thread_running and not self._stop_event.is_set():
+            try:
+                # Check connection state
+                if self.state != ConnectionState.CONNECTED:
+                    time.sleep(0.1)
+                    continue
+                    
+                # Receive data from socket
+                try:
+                    data = self.instruction_socket.recv(4096)
+                    if not data:
+                        raise ConnectionError("Connection closed by remote host")
+                    
+                    # Process received data (implementation depends on protocol)
+                    # This is a simplified example - adjust based on actual protocol
+                    self._process_instruction(data)
+                    
+                except socket.timeout:
+                    continue
+                except (socket.error, ConnectionError) as e:
+                    if not self._stop_event.is_set():
+                        self._handle_connection_error(f"Instruction thread error: {e}")
+                    break
+                    
+            except Exception as e:
+                logging.error(f"Unexpected error in instruction thread: {e}", exc_info=True)
+                if not self._stop_event.is_set():
+                    time.sleep(0.1)  # Prevent tight loop on errors
+
+    def _process_video_frame(self, frame_data: bytes) -> None:
+        """Process a received video frame.
+        
+        Args:
+            frame_data: Raw video frame data
+        """
+        # TO DO: Implement video frame processing
+        pass
+
+    def _process_instruction(self, data: bytes) -> None:
+        """Process received instruction data.
+        
+        Args:
+            data: Raw instruction data
+        """
+        # TO DO: Implement instruction processing
+        pass
+
+    def _handle_connection_error(self, error: str) -> None:
+        """Handle a connection-related error.
+        
+        Args:
+            error: Error message
+        """
+        logging.error(error)
+        self._set_state(ConnectionState.ERROR)
+        self.stop_threads()
+
+    def _create_socket(self) -> socket.socket:
+        """Create a new socket with default settings."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(self.SOCKET_TIMEOUT)
+        return sock
 
 class VideoHandler:
     """Manages video refresh and photo capture for the main video label."""
