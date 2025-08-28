@@ -461,7 +461,8 @@ class VideoHandler:
     def take_photo(self) -> None:
         try:
             try:
-                self.client.send_data(cmd.CMD_BUZZER + '#1' + '\n')
+                self.client.send_data(cmd.CMD_BUZZER + '#1' + '\n') 
+                self.client.send_data(cmd.CMD_LED + '#1' + '\n')
             except Exception as e:
                 print(e)
             QtCore.QTimer.singleShot(120, self._capture_photo_and_buzz_off)
@@ -480,7 +481,8 @@ class VideoHandler:
             print(e)
         finally:
             try:
-                self.client.send_data(cmd.CMD_BUZZER + '#0' + '\n')
+                self.client.send_data(cmd.CMD_BUZZER + '# 0' + '\n') 
+                self.client.send_data(cmd.CMD_LED + '#0' + '\n')
             except Exception as e:
                 print(e)
 
