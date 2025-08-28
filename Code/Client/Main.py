@@ -120,17 +120,30 @@ class VideoHandler:
             self.client.video_flag = True
 
     def take_photo(self) -> None:
+        """Take a photo with LED flash and buzzer feedback.
+        
+        This method will:
+        1. Turn on the LED
+        2. Beep the buzzer
+        3. Take the photo
+        4. Turn off the buzzer and LED
+        """
         try:
             try:
-                self.client.send_data(cmd.CMD_BUZZER + '#1' + '\n')
+                # Turn on LED and buzzer
+                self.client.send_data(cmd.CMD_LED + '#1' + '\n')  # Turn on LED
+                self.client.send_data(cmd.CMD_BUZZER + '#1' + '\n')  # Start buzzer
             except Exception as e:
-                print(e)
-            QtCore.QTimer.singleShot(120, self._capture_photo_and_buzz_off)
+                print(f"Error activating LED/buzzer: {e}")
+            # Schedule photo capture and cleanup
+            QtCore.QTimer.singleShot(120, self._capture_photo_and_cleanup)
         except Exception as e:
-            print(e)
+            print(f"Error in take_photo: {e}")
 
-    def _capture_photo_and_buzz_off(self) -> None:
+    def _capture_photo_and_cleanup(self) -> None:
+        """Capture the photo and clean up LED/buzzer."""
         try:
+            # Capture the photo
             if hasattr(self.client, 'image') and len(self.client.image) > 0:
                 pix = self.video_label.pixmap()
             else:
@@ -138,12 +151,14 @@ class VideoHandler:
             saved_path = self.camera_recorder.capture(pixmap=pix if pix is not None else None)
             print('Photo saved to:', saved_path)
         except Exception as e:
-            print(e)
+            print(f"Error capturing photo: {e}")
         finally:
             try:
+                # Ensure both buzzer and LED are turned off
                 self.client.send_data(cmd.CMD_BUZZER + '#0' + '\n')
+                self.client.send_data(cmd.CMD_LED + '#0' + '\n')
             except Exception as e:
-                print(e)
+                print(f"Error during cleanup: {e}")
 
 class UIManager:
     """Opens auxiliary windows bound to the same client (LED, Face, Calibration)."""
@@ -244,14 +259,53 @@ class RobotController:
         self.client.send_data(command)
 
     def buzzer(self) -> None:
-        if self.ui.Button_Buzzer.text() == 'Buzzer':
-            command=cmd.CMD_BUZZER+'#1'+'\n'
-            self.client.send_data(command)
-            self.ui.Button_Buzzer.setText('Noise')
-        else:
-            command=cmd.CMD_BUZZER+'#0'+'\n'
-            self.client.send_data(command)
+        """Toggle the buzzer to ring 3 times with short intervals.
+        
+        When activated, the buzzer will beep 3 times with 0.2s intervals,
+        then automatically turn off after the sequence.
+        """
+        print(f"[DEBUG] Buzzer method called. Button text: {self.ui.Button_Buzzer.text()}")
+        
+        # If there's an active buzzer timer, stop it first
+        if hasattr(self, 'buzzer_timer') and self.buzzer_timer.isActive():
+            print("[DEBUG] Stopping existing buzzer timer")
+            self.buzzer_timer.stop()
+            self.buzzer_timer.deleteLater()
+            # Ensure buzzer is off
+            command = f"{cmd.CMD_BUZZER}#0"
+            self.client.send_data(command + '\n')
             self.ui.Button_Buzzer.setText('Buzzer')
+            return
+        
+        # Start a new sequence
+        print("[DEBUG] Starting new buzzer sequence")
+        self.buzzer_timer = QTimer()
+        self.buzzer_count = 0
+        
+        def buzzer_sequence():
+            state = '1' if self.buzzer_count % 2 == 0 else '0'
+            command = f"{cmd.CMD_BUZZER}#{state}"
+            print(f"[DEBUG] Buzzer sequence - Count: {self.buzzer_count}, State: {state}, Command: {command.strip()}")
+            
+            if self.buzzer_count < 6:  # 3 beeps (on/off for each)
+                self.client.send_data(command + '\n')
+                self.buzzer_count += 1
+                # Toggle button text to show activity
+                btn_text = 'Buzzing...' if state == '1' else 'Buzzer'
+                self.ui.Button_Buzzer.setText(btn_text)
+                print(f"[DEBUG] Updated button text to: {btn_text}")
+            else:
+                print("[DEBUG] Buzzer sequence complete, stopping timer")
+                self.buzzer_timer.stop()
+                self.buzzer_timer.deleteLater()
+                self.ui.Button_Buzzer.setText('Buzzer')
+        
+        print("[DEBUG] Setting up timer with 200ms interval")
+        self.buzzer_timer.timeout.connect(buzzer_sequence)
+        self.buzzer_timer.start(200)  # 200ms interval for on/off
+        # Start the first beep immediately
+        print("[DEBUG] Starting first beep immediately")
+        buzzer_sequence()
 
     def imu(self) -> None:
         if self.ui.Button_IMU.text()=='Balance':
@@ -326,8 +380,7 @@ class MyWindow(QMainWindow,Ui_client):
         self.Button_Sonic.clicked.connect(self.controller.sonic)
         self.Button_Take_Photo.clicked.connect(self.video_handler.take_photo)
         self.Button_Relax.clicked.connect(self.controller.relax)
-        self.Button_Buzzer.pressed.connect(self.controller.buzzer)
-        self.Button_Buzzer.released.connect(self.controller.buzzer)
+        self.Button_Buzzer.clicked.connect(self.controller.buzzer)
 
         #Slider
         self.slider_head.setMinimum(HEAD_MIN)
@@ -911,19 +964,7 @@ class MyWindow(QMainWindow,Ui_client):
             print(command)
         except Exception as e:
             print(e)
-    #BUZZER
-    def buzzer(self):
-        if self.Button_Buzzer.text() == 'Buzzer':
-            command=cmd.CMD_BUZZER+'#1'+'\n'
-            self.client.send_data(command)
-            self.Button_Buzzer.setText('Noise')
-            #print (command)
-        else:
-            command=cmd.CMD_BUZZER+'#0'+'\n'
-            self.client.send_data(command)
-            self.Button_Buzzer.setText('Buzzer')
-            #print (command)
-    #BALANCE
+    # BALANCE
     def imu(self):
         if self.Button_IMU.text()=='Balance':
             command=cmd.CMD_BALANCE+'#1'+'\n'
