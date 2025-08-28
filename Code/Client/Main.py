@@ -1,6 +1,7 @@
 
 # -*- coding: utf-8 -*-
 import sys
+import os
 import math
 import threading
 import time
@@ -44,65 +45,196 @@ TIMER_SONIC_MS: int = 100
 TIMER_PHOTO_MS: int = 100
 
 class NetworkManager:
-    """Encapsulates network connection and background threads for video/instruction.
-
-    This class centralizes socket lifecycle management and the two background threads
-    used by the client (video stream and instruction receiver).
+    """
+    Manages network connections and background threads for video streaming and instructions.
+    
+    This class provides thread-safe methods to manage the lifecycle of network connections
+    and their associated background threads. It ensures proper cleanup and error handling.
     """
     def __init__(self, client: 'Client') -> None:
+        """Initialize the NetworkManager with a client instance.
+        
+        Args:
+            client: The Client instance to manage network connections for.
+        """
         self.client = client
         self.video_thread: Optional[threading.Thread] = None
         self.instruction_thread: Optional[threading.Thread] = None
-        self.is_connected: bool = False
+        self._is_connected: bool = False
+        self._lock = threading.Lock()  # For thread-safe operations
+        self._stop_event = threading.Event()  # For graceful thread termination
+        self._connection_attempts = 0
+        self._max_connection_attempts = 3
+        self._reconnect_delay = 2.0  # seconds
+
+    @property
+    def is_connected(self) -> bool:
+        """Thread-safe access to the connection status."""
+        with self._lock:
+            return self._is_connected
 
     def connect(self, ip: str, instruction_target: Callable[[str], None]) -> None:
-        """Start sockets and threads.
-
+        """Establish a connection and start background threads with retry logic.
+        
         Args:
-            ip: Server IP address string.
-            instruction_target: Callable accepting the IP string to start instruction loop.
+            ip: Server IP address to connect to.
+            instruction_target: Callable that handles the instruction loop.
+            
+        Raises:
+            RuntimeError: If already connected or connection fails after retries.
         """
-        if self.is_connected:
-            return
-        self.client.turn_on_client(ip)
-        self.video_thread = threading.Thread(target=self.client.receiving_video, args=(ip,))
-        self.instruction_thread = threading.Thread(target=instruction_target, args=(ip,))
-        self.video_thread.start()
-        self.instruction_thread.start()
-        self.is_connected = True
+        with self._lock:
+            if self._is_connected:
+                raise RuntimeError("Already connected to a server")
 
-    def stop_threads(self) -> None:
-        """Best-effort stop on background threads."""
-        try:
-            if getattr(self, 'video_thread', None):
-                stop_thread(self.video_thread)
-                self.video_thread = None
-        except Exception:
-            pass
-        try:
-            if getattr(self, 'instruction_thread', None):
-                stop_thread(self.instruction_thread)
-                self.instruction_thread = None
-        except Exception:
-            pass
+        self._stop_event.clear()
+        self._connection_attempts = 0
 
-    def disconnect(self) -> None:
-        """Stop threads and close sockets."""
-        if not self.is_connected:
-            # Still attempt to close sockets; client may have partial state.
+        # Try to establish connection with retries
+        while self._connection_attempts < self._max_connection_attempts and not self._stop_event.is_set():
+            try:
+                # Initialize connection with timeout
+                self.client.turn_on_client(ip)
+                self.client.client_socket1.settimeout(5.0)
+                self.client.client_socket.settimeout(5.0)
+
+                # Create and start threads
+                self.video_thread = threading.Thread(
+                    target=self._video_thread_func,
+                    args=(ip,),
+                    name="VideoThread",
+                    daemon=True
+                )
+                
+                self.instruction_thread = threading.Thread(
+                    target=self._instruction_thread_func,
+                    args=(instruction_target, ip),
+                    name="InstructionThread",
+                    daemon=True
+                )
+                
+                self.video_thread.start()
+                self.instruction_thread.start()
+                
+                with self._lock:
+                    self._is_connected = True
+                    self._connection_attempts = 0  # Reset on success
+                return
+                
+            except (socket.timeout, ConnectionError) as e:
+                self._connection_attempts += 1
+                if self._connection_attempts >= self._max_connection_attempts:
+                    self._cleanup_resources()
+                    raise RuntimeError(f"Failed to connect after {self._max_connection_attempts} attempts: {str(e)}")
+                
+                print(f"Connection attempt {self._connection_attempts} failed, retrying in {self._reconnect_delay} seconds...")
+                time.sleep(self._reconnect_delay)
+                
+            except Exception as e:
+                self._cleanup_resources()
+                raise RuntimeError(f"Failed to establish connection: {str(e)}")
+    
+    def _video_thread_func(self, ip: str) -> None:
+        """Wrapper function for video thread with error handling and reconnection logic."""
+        while not self._stop_event.is_set():
+            try:
+                self.client.receiving_video(ip)
+            except (ConnectionError, socket.timeout) as e:
+                print(f"Video connection lost: {e}")
+                if not self._attempt_reconnect():
+                    break
+            except Exception as e:
+                print(f"Video thread error: {e}")
+                break
+        
+        self.disconnect()
+    
+    def _instruction_thread_func(self, target: Callable[[str], None], ip: str) -> None:
+        """Wrapper function for instruction thread with error handling and reconnection logic."""
+        while not self._stop_event.is_set():
+            try:
+                target(ip)
+            except (ConnectionError, socket.timeout) as e:
+                print(f"Instruction connection lost: {e}")
+                if not self._attempt_reconnect():
+                    break
+            except Exception as e:
+                print(f"Instruction thread error: {e}")
+                break
+        
+        self.disconnect()
+    
+    def _attempt_reconnect(self) -> bool:
+        """Attempt to reconnect after a connection loss."""
+        with self._lock:
+            if self._stop_event.is_set():
+                return False
+                
+            self.client.tcp_flag = False
+            time.sleep(1)  # Wait before reconnection attempt
+            
             try:
                 self.client.turn_off_client()
-            except Exception:
-                pass
+                return True
+            except Exception as e:
+                print(f"Error during reconnection: {e}")
+                return False
+
+    def stop_threads(self) -> None:
+        """Safely stop all background threads with proper cleanup."""
+        with self._lock:
+            if not self._is_connected:
+                return
+            
+            self._stop_event.set()
+            
+            threads = []
+            if self.video_thread and self.video_thread.is_alive():
+                threads.append((self.video_thread, "video"))
+            if self.instruction_thread and self.instruction_thread.is_alive():
+                threads.append((self.instruction_thread, "instruction"))
+            
+            for thread, name in threads:
+                try:
+                    stop_thread(thread)
+                    thread.join(timeout=2.0)
+                    if thread.is_alive():
+                        print(f"Warning: {name} thread did not terminate gracefully")
+                except Exception as e:
+                    print(f"Error stopping {name} thread: {e}")
+            
+            self.video_thread = None
+            self.instruction_thread = None
+    
+    def _cleanup_resources(self) -> None:
+        """Clean up network resources and update connection state."""
+        with self._lock:
+            try:
+                self.client.tcp_flag = False
+                self.client.turn_off_client()
+            except Exception as e:
+                print(f"Error during network cleanup: {e}")
+            finally:
+                self._is_connected = False
+                self._stop_event.clear()
+
+    def disconnect(self) -> None:
+        """Disconnect from the server and clean up resources.
+        
+        This method ensures all threads are stopped and network resources are released.
+        """
+        if not self._is_connected and not self._stop_event.is_set():
             return
-        self.stop_threads()
+            
         try:
-            self.client.tcp_flag = False
-            self.client.turn_off_client()
-        except Exception:
-            pass
+            self.stop_threads()
+            self._cleanup_resources()
+            print("Disconnected from server")
+        except Exception as e:
+            print(f"Error during disconnection: {e}")
         finally:
-            self.is_connected = False
+            with self._lock:
+                self._is_connected = False
 
 class VideoHandler:
     """Manages video refresh and photo capture for the main video label."""
@@ -287,57 +419,158 @@ class RobotController:
             print(e)
 class MyWindow(QMainWindow,Ui_client):
     def __init__(self):
-        super(MyWindow,self).__init__()
+        super(MyWindow, self).__init__()
         self.setupUi(self)
+        self._setup_ui_appearance()
+        self._setup_handlers()
+        self._setup_ui_components()
+        self._setup_timers()
+        self._setup_variables()
+        self._setup_focus_handling()
+    
+    def _setup_ui_appearance(self):
+        """Initialize the main window appearance and icons."""
         self.setWindowIcon(QIcon('Picture/logo_Mini.png'))
-        self.Video.setScaledContents (True)
+        self.Video.setScaledContents(True)
         self.Video.setPixmap(QPixmap('Picture/Spider_client.png'))
-
-        # Video and camera handler
-        self.video_handler = VideoHandler(client=None, video_label=self.Video)  # client set below
-
-        self.client=Client()
-        # Wire client into handlers
-        self.video_handler.client = self.client
+    
+    def _setup_handlers(self):
+        """Initialize and wire up all the handler classes."""
+        # Initialize handlers
+        self.video_handler = VideoHandler(client=None, video_label=self.Video)
+        self.client = Client()
         self.ui_manager = UIManager(self.client, self)
         self.controller = RobotController(self.client, ui=self)
         self.network = NetworkManager(self.client)
-        file = open('IP.txt', 'r')
-        self.lineEdit_IP_Adress.setText(str(file.readline()))
-        file.close()
-
+        
+        # Wire client into handlers
+        self.video_handler.client = self.client
+        
+        # Load IP address
+        try:
+            with open('IP.txt', 'r') as file:
+                self.lineEdit_IP_Adress.setText(str(file.readline().strip()))
+        except Exception as e:
+            print(f"Error loading IP address: {e}")
+    
+    def _setup_ui_components(self):
+        """Set up all UI components including buttons, sliders, and their connections."""
+        self._setup_buttons()
+        self._setup_sliders()
+        self._setup_radio_buttons()
+    
+    def _setup_buttons(self):
+        """Set up button connections."""
+        # Control buttons
+        self.Button_Connect.clicked.connect(self.connect)
+        self.Button_Video.clicked.connect(self.video)
+        self.Button_IMU.clicked.connect(self.controller.imu)
+        self.Button_Sonic.clicked.connect(self.controller.sonic)
+        self.Button_Relax.clicked.connect(self.controller.relax)
+        self.Button_Take_Photo.clicked.connect(self.video_handler.take_photo)
+        self.Button_Face_Recognition.clicked.connect(self.face_recognition)
+        
+        # Buzzer button has press/release events
+        self.Button_Buzzer.pressed.connect(self.controller.buzzer)
+        self.Button_Buzzer.released.connect(self.controller.buzzer)
+        
+        # Window control buttons
+        self.Button_Calibration.clicked.connect(self.ui_manager.show_calibration_window)
+        self.Button_LED.clicked.connect(self.ui_manager.show_led_window)
+        self.Button_Face_ID.clicked.connect(self.ui_manager.show_face_window)
+    
+    def _setup_sliders(self):
+        """Set up slider controls with their ranges and connections."""
+        # Head control sliders
+        self._setup_slider(self.slider_head, HEAD_MIN, HEAD_MAX, HEAD_INIT, self.head_up_and_down)
+        self._setup_slider(self.slider_head_1, 0, 180, HEAD_INIT, self.head_left_and_right)
+        
+        # Movement control sliders
+        self._setup_slider(self.slider_speed, SPEED_MIN, SPEED_MAX, SPEED_INIT, self.speed)
+        self._setup_slider(self.slider_roll, ROLL_MIN, ROLL_MAX, ROLL_INIT, self.set_roll)
+        self._setup_slider(self.slider_Z, Z_MIN, Z_MAX, Z_INIT, self.set_z)
+        
+        # Set initial speed
+        self.client.move_speed = str(self.slider_speed.value())
+    
+    def _setup_slider(self, slider, min_val, max_val, init_val, callback):
+        """Helper method to configure a slider with common settings."""
+        slider.setMinimum(min_val)
+        slider.setMaximum(max_val)
+        slider.setSingleStep(1)
+        slider.setValue(init_val)
+        slider.valueChanged.connect(callback)
+    
+    def _setup_radio_buttons(self):
+        """Set up radio button groups and their connections."""
+        # Action mode radio buttons
+        self.ButtonActionMode1.setChecked(True)
+        self.ButtonActionMode1.toggled.connect(lambda: self.action_mode(self.ButtonActionMode1))
+        self.ButtonActionMode2.setChecked(False)
+        self.ButtonActionMode2.toggled.connect(lambda: self.action_mode(self.ButtonActionMode2))
+        
+        # Gait mode radio buttons
+        self.ButtonGaitMode1.setChecked(True)
+        self.ButtonGaitMode1.toggled.connect(lambda: self.gait_mode(self.ButtonGaitMode1))
+        self.ButtonGaitMode2.setChecked(False)
+        self.ButtonGaitMode2.toggled.connect(lambda: self.gait_mode(self.ButtonGaitMode2))
+    
+    def _setup_timers(self):
+        """Initialize and set up all timers."""
+        # Video refresh timer
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.video_handler.refresh_image)
+        
+        # Power monitoring timer
+        self.timer_power = QTimer(self)
+        self.timer_power.timeout.connect(self.controller.power)
+        
+        # Sonic sensor timer
+        self.timer_sonic = QTimer(self)
+        self.timer_sonic.timeout.connect(self.controller.get_sonic_data)
+    
+    def _setup_variables(self):
+        """Initialize class variables and state."""
+        # Keyboard state
         self.key_w = False
         self.key_a = False
         self.key_s = False
         self.key_d = False
         self.key_space = False
+        
         # Thread handles
         self.video_thread = None
         self.instruction_thread = None
-
-        #Button click event
-        self.Button_Connect.clicked.connect(self.connect)
-        self.Button_Video.clicked.connect(self.video)
-        self.Button_IMU.clicked.connect(self.controller.imu)
-        self.Button_Calibration.clicked.connect(self.ui_manager.show_calibration_window)
-        self.Button_LED.clicked.connect(self.ui_manager.show_led_window)
-        self.Button_Face_ID.clicked.connect(self.ui_manager.show_face_window)
-        self.Button_Face_Recognition.clicked.connect(self.face_recognition)
-        self.Button_Sonic.clicked.connect(self.controller.sonic)
-        self.Button_Take_Photo.clicked.connect(self.video_handler.take_photo)
-        self.Button_Relax.clicked.connect(self.controller.relax)
-        self.Button_Buzzer.pressed.connect(self.controller.buzzer)
-        self.Button_Buzzer.released.connect(self.controller.buzzer)
-
-        #Slider
-        self.slider_head.setMinimum(HEAD_MIN)
-        self.slider_head.setMaximum(HEAD_MAX)
-        self.slider_head.setSingleStep(1)
-        self.slider_head.setValue(HEAD_INIT)
-        self.slider_head.valueChanged.connect(self.head_up_and_down)
-
-        self.slider_head_1.setMinimum(0)
-        self.slider_head_1.setMaximum(180)
+        
+        # Movement and state variables
+        self.power_value = [100, 100]
+        self.move_point = [325, 635]
+        self.move_flag = False
+        self.drawpoint = [[800, 180], [800, 650]]
+        self.action_flag = 1
+        self.gait_flag = 1
+    
+    def _setup_focus_handling(self):
+        """Set up focus handling for keyboard input."""
+        try:
+            # Main window should accept key focus
+            self.setFocusPolicy(Qt.StrongFocus)
+            
+            # Allow the video label to take focus for keyboard handling
+            self.Video.setFocusPolicy(Qt.StrongFocus)
+            
+            # Only focus the IP box when the user clicks it
+            self.lineEdit_IP_Adress.setFocusPolicy(Qt.ClickFocus)
+            
+            # Start with focus outside the IP box
+            self.lineEdit_IP_Adress.clearFocus()
+            self.Video.setFocus(Qt.OtherFocusReason)
+            
+            # When user presses Enter in IP box, move focus to Video (so keys control robot)
+            self.lineEdit_IP_Adress.returnPressed.connect(
+                lambda: self.Video.setFocus(Qt.TabFocusReason))
+        except Exception as e:
+            print(f"Error setting up focus handling: {e}")
         self.slider_head_1.setSingleStep(1)
         self.slider_head_1.setValue(HEAD_INIT)
         self.slider_head_1.valueChanged.connect(self.head_left_and_right)
@@ -1528,8 +1761,18 @@ class LedWindow(QMainWindow,Ui_led):
         rgb = np.array((r, g, b))
         return rgb
 
+def load_styles(app):
+    """Load and apply styles from the external QSS file."""
+    try:
+        style_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'styles.qss')
+        with open(style_file, 'r') as f:
+            app.setStyleSheet(f.read())
+    except Exception as e:
+        print(f"Error loading stylesheet: {e}")
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    myshow=MyWindow()
+    load_styles(app)
+    myshow = MyWindow()
     myshow.show()
     sys.exit(app.exec_())
