@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 import sys
 import os
@@ -8,17 +7,18 @@ import time
 from typing import Optional, Callable
 import cv2
 import numpy as np
-from ui_led import Ui_led
-from ui_face import Ui_Face
-from ui_client import Ui_client
+from src.ui.dialogs.led_dialog import Ui_led
+from src.ui.dialogs.face_dialog import Ui_Face
+from src.ui.main_window import Ui_client
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import *
-from Client import *
-from Calibration import *
-from camera_recording import CameraRecorder
-from Thread import *
+from src.core.client import Client
+from src.ui.dialogs.calibration_dialog import Ui_calibration
+from src.utils.camera_recorder import CameraRecorder
+from src.core.thread import *
+from src.core.command import COMMAND as cmd
 
 # ==========================
 # Module-level constants
@@ -50,16 +50,16 @@ import time
 import threading
 from typing import Optional, Callable, Any, Tuple, Dict
 
-from exceptions import (
+from src.utils.exceptions import (
     RobotError,
     ConnectionError,
     NetworkError,
     TimeoutError,
     InvalidStateError
 )
-from thread_safe import ThreadSafeValue, ThreadSafeCounter
-from logging_config import get_logger
-from utils import retry, handle_errors, log_duration
+from src.core.thread_safe import ThreadSafeValue, ThreadSafeCounter
+from src.utils.logging_config import get_logger
+from src.utils.utils import retry, handle_errors, log_duration
 
 logger = get_logger(__name__)
 
@@ -1431,14 +1431,26 @@ class MyWindow(QMainWindow,Ui_client):
             # Turn buzzer ON for a short beep (non-blocking)
             try:
                 self.client.send_data(cmd.CMD_BUZZER + '#1' + '\n')
+                # Use a singleShot timer to turn off the buzzer after a delay
+                # This ensures the timer is properly parented and cleaned up
+                QtCore.QTimer.singleShot(200, lambda: self._turn_off_buzzer())
             except Exception as e:
-                print(e)
+                print(f"Error in take_photo: {e}")
             # Delay slightly so the beep precedes the shutter
             QtCore.QTimer.singleShot(120, self._capture_photo_and_buzz_off)
         except Exception as e:
-            print(e)
+            print(f"Error in take_photo: {e}")
+            
+    def _turn_off_buzzer(self):
+        """Helper method to safely turn off the buzzer."""
+        try:
+            if hasattr(self, 'client') and self.client is not None:
+                self.client.send_data(cmd.CMD_BUZZER + '#0' + '\n')
+        except Exception as e:
+            print(f"Error turning off buzzer: {e}")
 
     def _capture_photo_and_buzz_off(self):
+        """Capture the current frame and save it as a photo."""
         try:
             # Consider feed available only if client.image has content
             if hasattr(self.client, 'image') and len(self.client.image) > 0:
@@ -1449,13 +1461,7 @@ class MyWindow(QMainWindow,Ui_client):
             saved_path = self.camera_recorder.capture(pixmap=pix if pix is not None else None)
             print('Photo saved to:', saved_path)
         except Exception as e:
-            print(e)
-        finally:
-            # Ensure buzzer is turned OFF
-            try:
-                self.client.send_data(cmd.CMD_BUZZER + '#0' + '\n')
-            except Exception as e:
-                print(e)
+            print(f"Error capturing photo: {e}")
 
 class FaceWindow(QMainWindow,Ui_Face):
     def __init__(self,client):
@@ -1971,7 +1977,7 @@ class LedWindow(QMainWindow,Ui_led):
 def load_styles(app):
     """Load and apply styles from the external QSS file."""
     try:
-        style_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'styles.qss')
+        style_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'styles/styles.qss')
         with open(style_file, 'r') as f:
             app.setStyleSheet(f.read())
     except Exception as e:

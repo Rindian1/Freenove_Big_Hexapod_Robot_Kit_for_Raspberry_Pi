@@ -17,10 +17,10 @@ import numpy as np
 from PIL import Image
 
 # Local imports
-from Command import COMMAND as cmd
-from Face import Face
-from PID import Incremental_PID
-from Thread import *
+from src.core.command import COMMAND as cmd
+from src.models.face import Face
+from src.models.pid import Incremental_PID
+from src.core.thread import *
 
 
 class Client:
