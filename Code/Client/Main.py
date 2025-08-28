@@ -2,6 +2,11 @@
 # -*- coding: utf-8 -*-
 import sys
 import math
+import threading
+import time
+from typing import Optional, Callable
+import cv2
+import numpy as np
 from ui_led import Ui_led
 from ui_face import Ui_Face
 from ui_client import Ui_client
@@ -12,6 +17,274 @@ from PyQt5.QtGui import *
 from Client import *
 from Calibration import *
 from camera_recording import CameraRecorder
+from Thread import *
+
+# ==========================
+# Module-level constants
+# ==========================
+HEAD_MIN: int = 50
+HEAD_MAX: int = 180
+HEAD_INIT: int = 90
+
+SPEED_MIN: int = 2
+SPEED_MAX: int = 10
+SPEED_INIT: int = 8
+
+ROLL_MIN: int = -15
+ROLL_MAX: int = 15
+ROLL_INIT: int = 0
+
+Z_MIN: int = -20
+Z_MAX: int = 20
+Z_INIT: int = 0
+
+TIMER_REFRESH_MS: int = 10
+TIMER_POWER_MS: int = 3000
+TIMER_SONIC_MS: int = 100
+TIMER_PHOTO_MS: int = 100
+
+class NetworkManager:
+    """Encapsulates network connection and background threads for video/instruction.
+
+    This class centralizes socket lifecycle management and the two background threads
+    used by the client (video stream and instruction receiver).
+    """
+    def __init__(self, client: 'Client') -> None:
+        self.client = client
+        self.video_thread: Optional[threading.Thread] = None
+        self.instruction_thread: Optional[threading.Thread] = None
+        self.is_connected: bool = False
+
+    def connect(self, ip: str, instruction_target: Callable[[str], None]) -> None:
+        """Start sockets and threads.
+
+        Args:
+            ip: Server IP address string.
+            instruction_target: Callable accepting the IP string to start instruction loop.
+        """
+        if self.is_connected:
+            return
+        self.client.turn_on_client(ip)
+        self.video_thread = threading.Thread(target=self.client.receiving_video, args=(ip,))
+        self.instruction_thread = threading.Thread(target=instruction_target, args=(ip,))
+        self.video_thread.start()
+        self.instruction_thread.start()
+        self.is_connected = True
+
+    def stop_threads(self) -> None:
+        """Best-effort stop on background threads."""
+        try:
+            if getattr(self, 'video_thread', None):
+                stop_thread(self.video_thread)
+                self.video_thread = None
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'instruction_thread', None):
+                stop_thread(self.instruction_thread)
+                self.instruction_thread = None
+        except Exception:
+            pass
+
+    def disconnect(self) -> None:
+        """Stop threads and close sockets."""
+        if not self.is_connected:
+            # Still attempt to close sockets; client may have partial state.
+            try:
+                self.client.turn_off_client()
+            except Exception:
+                pass
+            return
+        self.stop_threads()
+        try:
+            self.client.tcp_flag = False
+            self.client.turn_off_client()
+        except Exception:
+            pass
+        finally:
+            self.is_connected = False
+
+class VideoHandler:
+    """Manages video refresh and photo capture for the main video label."""
+    def __init__(self, client: 'Client', video_label: QLabel) -> None:
+        self.client = client
+        self.video_label = video_label
+        self.camera_recorder = CameraRecorder(output_dir='Captures', video_label=video_label)
+
+    def refresh_image(self) -> None:
+        if self.client.video_flag == False:
+            height, width, bytesPerComponent = self.client.image.shape
+            cv2.cvtColor(self.client.image, cv2.COLOR_BGR2RGB, self.client.image)
+            QImg = QImage(self.client.image.data.tobytes(), width, height, 3 * width, QImage.Format_RGB888)
+            self.video_label.setPixmap(QPixmap.fromImage(QImg))
+            self.client.video_flag = True
+
+    def take_photo(self) -> None:
+        try:
+            try:
+                self.client.send_data(cmd.CMD_BUZZER + '#1' + '\n')
+            except Exception as e:
+                print(e)
+            QtCore.QTimer.singleShot(120, self._capture_photo_and_buzz_off)
+        except Exception as e:
+            print(e)
+
+    def _capture_photo_and_buzz_off(self) -> None:
+        try:
+            if hasattr(self.client, 'image') and len(self.client.image) > 0:
+                pix = self.video_label.pixmap()
+            else:
+                pix = None
+            saved_path = self.camera_recorder.capture(pixmap=pix if pix is not None else None)
+            print('Photo saved to:', saved_path)
+        except Exception as e:
+            print(e)
+        finally:
+            try:
+                self.client.send_data(cmd.CMD_BUZZER + '#0' + '\n')
+            except Exception as e:
+                print(e)
+
+class UIManager:
+    """Opens auxiliary windows bound to the same client (LED, Face, Calibration)."""
+    def __init__(self, client: 'Client', parent_window: QMainWindow) -> None:
+        self.client = client
+        self.parent = parent_window
+        self.calibration_window = None
+        self.led_window = None
+        self.face_window = None
+
+    def show_calibration_window(self) -> None:
+        command = cmd.CMD_CALIBRATION + '\n'
+        self.client.send_data(command)
+        self.calibration_window = CalibrationWindow(self.client)
+        self.calibration_window.setWindowModality(Qt.ApplicationModal)
+        self.calibration_window.show()
+
+    def show_led_window(self) -> None:
+        try:
+            self.led_window = LedWindow(self.client)
+            self.led_window.setWindowModality(Qt.ApplicationModal)
+            self.led_window.show()
+        except Exception as e:
+            print(e)
+
+    def show_face_window(self) -> None:
+        try:
+            self.face_window = FaceWindow(self.client)
+            self.face_window.setWindowModality(Qt.ApplicationModal)
+            self.face_window.show()
+            self.client.fece_id = True
+        except Exception as e:
+            print(e)
+
+class RobotController:
+    """Maps UI state to robot commands (no UI ownership)."""
+    def __init__(self, client: 'Client', ui: QMainWindow) -> None:
+        self.client = client
+        self.ui = ui
+        self.action_flag = 1
+        self.gait_flag = 1
+
+    def map(self, value: float, fromLow: float, fromHigh: float, toLow: float, toHigh: float) -> float:
+        return (toHigh - toLow) * (value - fromLow) / (fromHigh - fromLow) + toLow
+
+    def move(self) -> None:
+        try:
+            x = self.map((self.ui.move_point[0]-325),0,100,0,35)
+            y = self.map((635 - self.ui.move_point[1]),0,100,0,35)
+            if self.action_flag == 1:
+                angle = 0
+            else:
+                if x!=0 or y!=0:
+                    angle=math.degrees(math.atan2(x,y))
+                    if angle < -90 and angle >= -180:
+                        angle=angle+360
+                    if angle >= -90 and angle <=90:
+                        angle = self.map(angle, -90, 90, -10, 10)
+                    else:
+                        angle = self.map(angle, 270, 90, 10, -10)
+                else:
+                    angle=0
+            speed=self.client.move_speed
+            command = cmd.CMD_MOVE+ "#"+str(self.gait_flag)+"#"+str(round(x))+"#"+str(round(y))\
+                      +"#"+str(speed)+"#"+str(round(angle)) +'\n'
+            print(command)
+            self.client.send_data(command)
+        except Exception as e:
+            print(e)
+
+    def relax(self) -> None:
+        try:
+            if self.ui.Button_Relax.text() == "Relax":
+                self.ui.Button_Relax.setText("Relaxed")
+                command = cmd.CMD_SERVOPOWER + "#" + "0" + '\n'
+            else:
+                self.ui.Button_Relax.setText("Relax")
+                command = cmd.CMD_SERVOPOWER + "#" + "1" + '\n'
+            print(command)
+            self.client.send_data(command)
+        except Exception as e:
+            print(e)
+
+    def attitude(self) -> None:
+        r = self.map((self.ui.drawpoint[0][0]-800), -100, 100, -15, 15)
+        p = self.map((180-self.ui.drawpoint[0][1]), -100, 100, -15, 15)
+        y=self.ui.slider_roll.value()
+        command = cmd.CMD_ATTITUDE+ "#" + str(round(r)) + "#" + str(round(p)) + "#" + str(round(y)) + '\n'
+        print(command)
+        self.client.send_data(command)
+
+    def position(self) -> None:
+        x = self.map((self.ui.drawpoint[1][0]-800), -100, 100, -40, 40)
+        y = self.map((650-self.ui.drawpoint[1][1]), -100, 100, -40, 40)
+        z=self.ui.slider_Z.value()
+        command = cmd.CMD_POSITION+ "#" + str(round(x)) + "#" + str(round(y)) + "#" + str(round(z)) + '\n'
+        print(command)
+        self.client.send_data(command)
+
+    def buzzer(self) -> None:
+        if self.ui.Button_Buzzer.text() == 'Buzzer':
+            command=cmd.CMD_BUZZER+'#1'+'\n'
+            self.client.send_data(command)
+            self.ui.Button_Buzzer.setText('Noise')
+        else:
+            command=cmd.CMD_BUZZER+'#0'+'\n'
+            self.client.send_data(command)
+            self.ui.Button_Buzzer.setText('Buzzer')
+
+    def imu(self) -> None:
+        if self.ui.Button_IMU.text()=='Balance':
+            command=cmd.CMD_BALANCE+'#1'+'\n'
+            self.client.send_data(command)
+            self.ui.Button_IMU.setText("Close")
+        else:
+            command=cmd.CMD_BALANCE+'#0'+'\n'
+            self.client.send_data(command)
+            self.ui.Button_IMU.setText('Balance')
+
+    def sonic(self) -> None:
+        if self.ui.Button_Sonic.text() == 'Sonic':
+            self.ui.timer_sonic.start(TIMER_SONIC_MS)
+            self.ui.Button_Sonic.setText('Close')
+        else:
+            self.ui.timer_sonic.stop()
+            self.ui.Button_Sonic.setText('Sonic')
+
+    def get_sonic_data(self) -> None:
+        command=cmd.CMD_SONIC+'\n'
+        self.client.send_data(command)
+
+    def power(self) -> None:
+        try:
+            command = cmd.CMD_POWER + '\n'
+            self.client.send_data(command)
+            self.ui.progress_Power1.setFormat(str(self.ui.power_value[0])+"V")
+            self.ui.progress_Power2.setFormat(str(self.ui.power_value[1]) + "V")
+            self.ui.progress_Power1.setValue(self.ui.restriction(round((float(self.ui.power_value[0]) - 5.00) / 3.40 * 100), 0, 100))
+            self.ui.progress_Power2.setValue(self.ui.restriction(round((float(self.ui.power_value[1]) - 7.00) / 1.40 * 100), 0, 100))
+        except Exception as e:
+            print(e)
 class MyWindow(QMainWindow,Ui_client):
     def __init__(self):
         super(MyWindow,self).__init__()
@@ -20,85 +293,93 @@ class MyWindow(QMainWindow,Ui_client):
         self.Video.setScaledContents (True)
         self.Video.setPixmap(QPixmap('Picture/Spider_client.png'))
 
-        # Camera recorder for snapshots
-        self.camera_recorder = CameraRecorder(output_dir='Captures', video_label=self.Video)
+        # Video and camera handler
+        self.video_handler = VideoHandler(client=None, video_label=self.Video)  # client set below
 
         self.client=Client()
+        # Wire client into handlers
+        self.video_handler.client = self.client
+        self.ui_manager = UIManager(self.client, self)
+        self.controller = RobotController(self.client, ui=self)
+        self.network = NetworkManager(self.client)
         file = open('IP.txt', 'r')
         self.lineEdit_IP_Adress.setText(str(file.readline()))
         file.close()
 
-        self.Key_W = False
-        self.Key_A = False
-        self.Key_S = False
-        self.Key_D = False
-        self.Key_Space = False
+        self.key_w = False
+        self.key_a = False
+        self.key_s = False
+        self.key_d = False
+        self.key_space = False
+        # Thread handles
+        self.video_thread = None
+        self.instruction_thread = None
 
         #Button click event
         self.Button_Connect.clicked.connect(self.connect)
         self.Button_Video.clicked.connect(self.video)
-        self.Button_IMU.clicked.connect(self.imu)
-        self.Button_Calibration.clicked.connect(self.showCalibrationWindow)
-        self.Button_LED.clicked.connect(self.showLedWindow)
-        self.Button_Face_ID.clicked.connect(self.showFaceWindow)
-        self.Button_Face_Recognition.clicked.connect(self.faceRecognition)
-        self.Button_Sonic.clicked.connect(self.sonic)
-        self.Button_Take_Photo.clicked.connect(self.take_photo)
-        self.Button_Relax.clicked.connect(self.relax)
-        self.Button_Buzzer.pressed.connect(self.buzzer)
-        self.Button_Buzzer.released.connect(self.buzzer)
+        self.Button_IMU.clicked.connect(self.controller.imu)
+        self.Button_Calibration.clicked.connect(self.ui_manager.show_calibration_window)
+        self.Button_LED.clicked.connect(self.ui_manager.show_led_window)
+        self.Button_Face_ID.clicked.connect(self.ui_manager.show_face_window)
+        self.Button_Face_Recognition.clicked.connect(self.face_recognition)
+        self.Button_Sonic.clicked.connect(self.controller.sonic)
+        self.Button_Take_Photo.clicked.connect(self.video_handler.take_photo)
+        self.Button_Relax.clicked.connect(self.controller.relax)
+        self.Button_Buzzer.pressed.connect(self.controller.buzzer)
+        self.Button_Buzzer.released.connect(self.controller.buzzer)
 
         #Slider
-        self.slider_head.setMinimum(50)
-        self.slider_head.setMaximum(180)
+        self.slider_head.setMinimum(HEAD_MIN)
+        self.slider_head.setMaximum(HEAD_MAX)
         self.slider_head.setSingleStep(1)
-        self.slider_head.setValue(90)
-        self.slider_head.valueChanged.connect(self.headUpAndDown)
+        self.slider_head.setValue(HEAD_INIT)
+        self.slider_head.valueChanged.connect(self.head_up_and_down)
 
         self.slider_head_1.setMinimum(0)
         self.slider_head_1.setMaximum(180)
         self.slider_head_1.setSingleStep(1)
-        self.slider_head_1.setValue(90)
-        self.slider_head_1.valueChanged.connect(self.headLeftAndRight)
+        self.slider_head_1.setValue(HEAD_INIT)
+        self.slider_head_1.valueChanged.connect(self.head_left_and_right)
 
-        self.slider_speed.setMinimum(2)
-        self.slider_speed.setMaximum(10)
+        self.slider_speed.setMinimum(SPEED_MIN)
+        self.slider_speed.setMaximum(SPEED_MAX)
         self.slider_speed.setSingleStep(1)
-        self.slider_speed.setValue(8)
+        self.slider_speed.setValue(SPEED_INIT)
         self.slider_speed.valueChanged.connect(self.speed)
         self.client.move_speed = str(self.slider_speed.value())
 
-        self.slider_roll.setMinimum(-15)
-        self.slider_roll.setMaximum(15)
+        self.slider_roll.setMinimum(ROLL_MIN)
+        self.slider_roll.setMaximum(ROLL_MAX)
         self.slider_roll.setSingleStep(1)
-        self.slider_roll.setValue(0)
-        self.slider_roll.valueChanged.connect(self.setRoll)
+        self.slider_roll.setValue(ROLL_INIT)
+        self.slider_roll.valueChanged.connect(self.set_roll)
 
-        self.slider_Z.setMinimum(-20)
-        self.slider_Z.setMaximum(20)
+        self.slider_Z.setMinimum(Z_MIN)
+        self.slider_Z.setMaximum(Z_MAX)
         self.slider_Z.setSingleStep(1)
-        self.slider_Z.setValue(0)
-        self.slider_Z.valueChanged.connect(self.setZ)
+        self.slider_Z.setValue(Z_INIT)
+        self.slider_Z.valueChanged.connect(self.set_z)
 
         #checkbox
         self.ButtonActionMode1.setChecked(True)
-        self.ButtonActionMode1.toggled.connect(lambda: self.actionMode(self.ButtonActionMode1))
+        self.ButtonActionMode1.toggled.connect(lambda: self.action_mode(self.ButtonActionMode1))
         self.ButtonActionMode2.setChecked(False)
-        self.ButtonActionMode2.toggled.connect(lambda: self.actionMode(self.ButtonActionMode2))
+        self.ButtonActionMode2.toggled.connect(lambda: self.action_mode(self.ButtonActionMode2))
         self.ButtonGaitMode1.setChecked(True)
-        self.ButtonGaitMode1.toggled.connect(lambda: self.gaitMode(self.ButtonGaitMode1))
+        self.ButtonGaitMode1.toggled.connect(lambda: self.gait_mode(self.ButtonGaitMode1))
         self.ButtonGaitMode2.setChecked(False)
-        self.ButtonGaitMode2.toggled.connect(lambda: self.gaitMode(self.ButtonGaitMode2))
+        self.ButtonGaitMode2.toggled.connect(lambda: self.gait_mode(self.ButtonGaitMode2))
 
         #Timer
         self.timer=QTimer(self)
-        self.timer.timeout.connect(self.refresh_image)
+        self.timer.timeout.connect(self.video_handler.refresh_image)
 
         self.timer_power = QTimer(self)
-        self.timer_power.timeout.connect(self.power)
+        self.timer_power.timeout.connect(self.controller.power)
 
         self.timer_sonic = QTimer(self)
-        self.timer_sonic.timeout.connect(self.getSonicData)
+        self.timer_sonic.timeout.connect(self.controller.get_sonic_data)
 
         #Variable
         self.power_value= [100,100]
@@ -141,22 +422,22 @@ class MyWindow(QMainWindow,Ui_client):
             self.relax()
         if (event.key() == Qt.Key_L):
             print("L")
-            self.showLedWindow()
+            self.show_led_window()
         if (event.key() == Qt.Key_B):
             print("B")
             self.imu()
         if (event.key() == Qt.Key_F):
             print("F")
-            self.faceRecognition()
+            self.face_recognition()
         if (event.key() == Qt.Key_U):
             print("U")
             self.sonic()
         if (event.key() == Qt.Key_I):
             print("I")
-            self.showFaceWindow()
+            self.show_face_window()
         if (event.key() == Qt.Key_T):
             print("T")
-            self.showCalibrationWindow()
+            self.show_calibration_window()
         if (event.key() == Qt.Key_Y):
             print("Y")
             self.buzzer()
@@ -165,49 +446,49 @@ class MyWindow(QMainWindow,Ui_client):
             pass
         else:
             if event.key() == Qt.Key_W:
-                self.Key_W = True
+                self.key_w = True
                 print("W")
                 self.move_point = [325, 535]
                 self.move()
             elif event.key() == Qt.Key_S:
-                self.Key_S = True
+                self.key_s = True
                 print("S")
                 self.move_point = [325, 735]
                 self.move()
             elif event.key() == Qt.Key_A:
-                self.Key_A = True
+                self.key_a = True
                 print("A")
                 self.move_point = [225, 635]
                 self.move()
             elif event.key() == Qt.Key_D:
-                self.Key_D = True
+                self.key_d = True
                 print("D")
                 self.move_point = [425, 635]
                 self.move()
 
     def keyReleaseEvent(self, event):
         if (event.key() == Qt.Key_W):
-            if not (event.isAutoRepeat()) and self.Key_W == True:
+            if not (event.isAutoRepeat()) and self.key_w == True:
                 print("release W")
-                self.Key_W = False
+                self.key_w = False
                 self.move_point = [325, 635]
                 self.move()
         elif (event.key() == Qt.Key_A):
-            if not (event.isAutoRepeat()) and self.Key_A == True:
+            if not (event.isAutoRepeat()) and self.key_a == True:
                 print("release A")
-                self.Key_A = False
+                self.key_a = False
                 self.move_point = [325, 635]
                 self.move()
         elif (event.key() == Qt.Key_S):
-            if not (event.isAutoRepeat()) and self.Key_S == True:
+            if not (event.isAutoRepeat()) and self.key_s == True:
                 print("release S")
-                self.Key_S = False
+                self.key_s = False
                 self.move_point = [325, 635]
                 self.move()
         elif (event.key() == Qt.Key_D):
-            if not (event.isAutoRepeat()) and self.Key_D == True:
+            if not (event.isAutoRepeat()) and self.key_d == True:
                 print("release D")
-                self.Key_D = False
+                self.key_d = False
                 self.move_point = [325, 635]
                 self.move()
     def paintEvent(self,e):
@@ -389,7 +670,7 @@ class MyWindow(QMainWindow,Ui_client):
     def map(self, value, fromLow, fromHigh, toLow, toHigh):
         return (toHigh - toLow) * (value - fromLow) / (fromHigh - fromLow) + toLow
 
-    def faceRecognition(self):
+    def face_recognition(self):
         try:
             if self.Button_Face_Recognition.text()=="Face Recog":
                 self.client.fece_recognition_flag = True
@@ -457,15 +738,11 @@ class MyWindow(QMainWindow,Ui_client):
             self.timer_power.stop()
         except Exception as e:
             print(e)
+        # Delegate to NetworkManager
         try:
-            stop_thread(self.videoThread)
+            self.network.disconnect()
         except Exception as e:
             print(e)
-        try:
-            stop_thread(self.instructionThread)
-        except Exception as e:
-            print(e)
-        self.client.turn_off_client()
         QCoreApplication.instance().quit()
         #os._exit(0)
 
@@ -479,7 +756,7 @@ class MyWindow(QMainWindow,Ui_client):
 
     def video(self):
         if self.Button_Video.text() == 'Open Video':
-            self.timer.start(10)
+            self.timer.start(TIMER_REFRESH_MS)
             self.Button_Video.setText('Close Video')
         else:
             self.timer.stop()
@@ -547,16 +824,17 @@ class MyWindow(QMainWindow,Ui_client):
             file.close()
             if self.Button_Connect.text()=='Connect':
                 self.IP = self.lineEdit_IP_Adress.text()
-                self.client.turn_on_client(self.IP)
-                self.videoThread=threading.Thread(target=self.client.receiving_video,args=(self.IP,))
-                self.instructionThread=threading.Thread(target=self.receive_instruction,args=(self.IP,))
-                self.videoThread.start()
-                self.instructionThread.start()
+                # Use NetworkManager to establish connection and spin up threads
+                # Basic input validation: non-empty IP string
+                if not isinstance(self.IP, str) or len(self.IP.strip()) == 0:
+                    print('Invalid IP address input')
+                    return
+                self.network.connect(self.IP, self.receive_instruction)
                 #self.face_thread = threading.Thread(target=self.client.face_recognition)
                 #self.face_thread.start()
                 self.Button_Connect.setText('Disconnect')
                 #self.time_out.start(11000)
-                self.timer_power.start(3000)
+                self.timer_power.start(TIMER_POWER_MS)
                 # Move focus away from IP field so keys control robot
                 try:
                     self.lineEdit_IP_Adress.clearFocus()
@@ -564,16 +842,8 @@ class MyWindow(QMainWindow,Ui_client):
                 except Exception as _:
                     pass
             else:
-                try:
-                    stop_thread(self.videoThread)
-                except:
-                    pass
-                try:
-                    stop_thread(self.instructionThread)
-                except:
-                    pass
-                self.client.tcp_flag=False
-                self.client.turn_off_client()
+                # Graceful disconnect via NetworkManager
+                self.network.disconnect()
                 self.Button_Connect.setText('Connect')
                 self.timer_power.stop()
                 # Ensure focus returns to Video after disconnect
@@ -585,8 +855,8 @@ class MyWindow(QMainWindow,Ui_client):
         except Exception as e:
             print(e)
     #Mode
-    #actionMode
-    def actionMode(self,mode):
+    #action_mode
+    def action_mode(self,mode):
         if mode.text() == "Action Mode 1":
             if mode.isChecked() == True:
                 #print(mode.text())
@@ -599,8 +869,8 @@ class MyWindow(QMainWindow,Ui_client):
                 self.ButtonActionMode1.setChecked(False)
                 self.ButtonActionMode2.setChecked(True)
                 self.action_flag = 2
-    # gaitMode
-    def gaitMode(self,mode):
+    # gait_mode
+    def gait_mode(self,mode):
         if mode.text() == "Gait Mode 1":
             if mode.isChecked() == True:
                 #print(mode.text())
@@ -617,13 +887,13 @@ class MyWindow(QMainWindow,Ui_client):
     def speed(self):
         self.client.move_speed=str(self.slider_speed.value())
         self.label_speed.setText(str(self.slider_speed.value()))
-    def setZ(self):
+    def set_z(self):
         self.label_Z.setText(str(self.slider_Z.value()))
         self.position()
-    def setRoll(self):
+    def set_roll(self):
         self.label_roll.setText(str(self.slider_roll.value()))
         self.attitude()
-    def headUpAndDown(self):
+    def head_up_and_down(self):
         try:
             angle = str(self.slider_head.value())
             self.label_head.setText(angle)
@@ -632,7 +902,7 @@ class MyWindow(QMainWindow,Ui_client):
             print(command)
         except Exception as e:
             print(e)
-    def headLeftAndRight(self):
+    def head_left_and_right(self):
         try:
             angle = str(180-self.slider_head_1.value())
             self.label_head_1.setText(angle)
@@ -675,33 +945,33 @@ class MyWindow(QMainWindow,Ui_client):
             self.timer_sonic.stop()
             self.Button_Sonic.setText('Sonic')
             #
-    def getSonicData(self):
+    def get_sonic_data(self):
         command=cmd.CMD_SONIC+'\n'
         self.client.send_data(command)
         #print (command)
 
-    def showCalibrationWindow(self):
+    def show_calibration_window(self):
         command = cmd.CMD_CALIBRATION + '\n'
         self.client.send_data(command)
-        self.calibrationWindow=calibrationWindow(self.client)
-        self.calibrationWindow.setWindowModality(Qt.ApplicationModal)
-        self.calibrationWindow.show()
+        self.calibration_window = CalibrationWindow(self.client)
+        self.calibration_window.setWindowModality(Qt.ApplicationModal)
+        self.calibration_window.show()
 
     #LED
-    def showLedWindow(self):
+    def show_led_window(self):
         try:
-            self.ledWindow=ledWindow(self.client)
-            self.ledWindow.setWindowModality(Qt.ApplicationModal)
-            self.ledWindow.show()
+            self.led_window = LedWindow(self.client)
+            self.led_window.setWindowModality(Qt.ApplicationModal)
+            self.led_window.show()
         except Exception as e:
             print(e)
 
     # Face
-    def showFaceWindow(self):
+    def show_face_window(self):
         try:
-            self.faceWindow = faceWindow(self.client)
-            self.faceWindow.setWindowModality(Qt.ApplicationModal)
-            self.faceWindow.show()
+            self.face_window = FaceWindow(self.client)
+            self.face_window.setWindowModality(Qt.ApplicationModal)
+            self.face_window.show()
             self.client.fece_id = True
         except Exception as e:
             print(e)
@@ -747,12 +1017,12 @@ class MyWindow(QMainWindow,Ui_client):
             except Exception as e:
                 print(e)
 
-class faceWindow(QMainWindow,Ui_Face):
+class FaceWindow(QMainWindow,Ui_Face):
     def __init__(self,client):
-        super(faceWindow,self).__init__()
+        super(FaceWindow,self).__init__()
         self.setupUi(self)
         self.setWindowIcon(QIcon('Picture/logo_Mini.png'))
-        self.Button_Read_Face.clicked.connect(self.readFace)
+        self.Button_Read_Face.clicked.connect(self.read_face)
         self.client = client
         self.face_image=''
         self.photoCount=0
@@ -761,84 +1031,77 @@ class faceWindow(QMainWindow,Ui_Face):
         self.readFaceFlag=False
         # Timer
         self.timer1 = QTimer(self)
-        self.timer1.timeout.connect(self.faceDetection)
+        self.timer1.timeout.connect(self.face_detection)
         self.timer1.start(10)
 
         self.timer2 = QTimer(self)
-        self.timer2.timeout.connect(self.facePhoto)
+        self.timer2.timeout.connect(self.face_photo)
 
     def closeEvent(self, event):
         self.timer1.stop()
         self.client.fece_id = False
-    def readFace(self):
+
+    def read_face(self):
         try:
-            if self.Button_Read_Face.text()=="Read Face":
+            if self.Button_Read_Face.text() == "Read Face":
                 self.Button_Read_Face.setText("Reading")
-                self.timer2.start(10)
-                self.timeout=time.time()
+                self.readFaceFlag = True
+                self.face_image = ''
+                self.photoCount = 0
+                self.timeout = time.time()
+                self.timer2.start(TIMER_PHOTO_MS)  # Use constant for timer interval
+            elif self.Button_Read_Face.text() == "Reading":
+                self.Button_Read_Face.setText("Read Face")
+                self.readFaceFlag = False
+                self.timer2.stop()
+        except Exception as e:
+            print(e)
+
+    def face_photo(self):
+        try:
+            if self.photoCount == 30:
+                self.photoCount = 0
+                self.timer2.stop()
+                self.Button_Read_Face.setText("Read Face")
             else:
-                self.timer2.stop()
-                if self.photoCount!=0:
-                    self.Button_Read_Face.setText("Waiting ")
-                    self.client.face.trainImage()
-                    QMessageBox.information(self, "Message", "success", QMessageBox.Yes)
-                self.Button_Read_Face.setText("Read Face")
-                self.name = self.lineEdit.setText("")
-                self.photoCount == 0
-        except Exception as e:
-            print(e)
-
-    def facePhoto(self):
-        try:
-            if self.photoCount==30:
-                self.photoCount==0
-                self.timer2.stop()
-                self.Button_Read_Face.setText("Waiting ")
-                self.client.face.trainImage()
-                QMessageBox.information(self, "Message", "success", QMessageBox.Yes)
-                self.Button_Read_Face.setText("Read Face")
-                self.name = self.lineEdit.setText("")
-            if len(self.face_image)>0:
-                self.name = self.lineEdit.text()
-                if len(self.name) > 0:
-
-                    height, width= self.face_image.shape[:2]
-                    QImg = QImage(self.face_image.data.tobytes(), width, height,3 * width,QImage.Format_RGB888)
-                    self.label_photo.setPixmap(QPixmap.fromImage(QImg))
-
-                    second=int(time.time() - self.timeout)
-                    if second > 1:
-                        self.saveFcaePhoto()
-                        self.timeout=time.time()
+                if (len(self.client.image) > 0) and self.readFaceFlag:
+                    gray = cv2.cvtColor(self.client.image, cv2.COLOR_BGR2GRAY)
+                    faces = self.client.face.classifier.detectMultiScale(gray, 1.2, 5)
+                    if len(faces) > 0:
+                        x, y, w, h = faces[0]
+                        self.face_image = self.client.image[y - 20:y + h + 20, x - 20:x + w + 20].copy()
+                        self.save_face_photo()
+                        self.timeout = time.time()
+                        self.Button_Read_Face.setText("Reading " + str(1) + "S   " + str(self.photoCount) + "/30")
                     else:
-                        self.Button_Read_Face.setText("Reading "+str(1-second)+"S   "+str(self.photoCount)+"/30")
-                    self.face_image=''
+                        self.Button_Read_Face.setText("Reading " + str(1) + "S   " + str(self.photoCount) + "/30")
                 else:
-                    QMessageBox.information(self, "Message", "Please enter your name", QMessageBox.Yes)
-                    self.timer2.stop()
-                    self.Button_Read_Face.setText("Read Face")
+                    second = int(time.time() - self.timeout)
+                    if second > 1:
+                        self.save_face_photo()
+                        self.timeout = time.time()
+                    else:
+                        self.Button_Read_Face.setText("Reading " + str(1 - second) + "S   " + str(self.photoCount) + "/30")
         except Exception as e:
             print(e)
 
-    def saveFcaePhoto(self):
+    def save_face_photo(self):
         cv2.cvtColor(self.face_image, cv2.COLOR_BGR2RGB, self.face_image)
-        cv2.imwrite('Face/'+str(len(self.client.face.name))+'.jpg', self.face_image)
-        self.client.face.name.append([str(len(self.client.face.name)),str(self.name)])
-        self.client.face.Save_to_txt(self.client.face.name, 'Face/name')
-        self.client.face.name = self.client.face.Read_from_txt('Face/name')
+        cv2.imwrite('Face/' + str(len(self.client.face.name)) + '.jpg', self.face_image)
+        self.client.face.name.append([str(len(self.client.face.name)), str(self.name)])
+        self.name = ''
         self.photoCount += 1
-        self.Button_Read_Face.setText("Reading "+str(0)+" S "+str(self.photoCount)+"/30")
+        self.Button_Read_Face.setText("Reading " + str(0) + " S " + str(self.photoCount) + "/30")
 
-    def faceDetection(self):
+    def face_detection(self):
         try:
-            if len(self.client.image)>0:
+            if len(self.client.image) > 0:
                 gray = cv2.cvtColor(self.client.image, cv2.COLOR_BGR2GRAY)
-                faces = self.client.face.detector.detectMultiScale(gray, 1.2, 5)
+                faces = self.client.face.classifier.detectMultiScale(gray, 1.2, 5)
                 if len(faces) > 0:
-                    for (x, y, w, h) in faces:
-                        self.face_image = self.client.image[y-5:y + h+5, x-5:x + w+5]
-                        cv2.rectangle(self.client.image, (x-20, y-20), (x + w+20, y + h+20), (0, 255, 0), 2)
-                if self.client.video_flag == False:
+                    x, y, w, h = faces[0]
+                    cv2.rectangle(self.client.image, (x - 20, y - 20), (x + w + 20, y + h + 20), (0, 255, 0), 2)
+                if not self.client.video_flag:
                     height, width, bytesPerComponent = self.client.image.shape
                     cv2.cvtColor(self.client.image, cv2.COLOR_BGR2RGB, self.client.image)
                     QImg = QImage(self.client.image.data.tobytes(), width, height, 3 * width, QImage.Format_RGB888)
@@ -847,20 +1110,20 @@ class faceWindow(QMainWindow,Ui_Face):
         except Exception as e:
             print(e)
 
-class calibrationWindow(QMainWindow,Ui_calibration):
-    def __init__(self,client):
-        super(calibrationWindow,self).__init__()
+class CalibrationWindow(QMainWindow, Ui_calibration):
+    def __init__(self, client):
+        super(CalibrationWindow, self).__init__()
         self.setupUi(self)
         self.setWindowIcon(QIcon('Picture/logo_Mini.png'))
-        self.label_picture.setScaledContents (True)
+        self.label_picture.setScaledContents(True)
         self.label_picture.setPixmap(QPixmap('Picture/Spider_calibration.png'))
-        self.point=self.Read_from_txt('point')
+        self.point = self.read_from_txt('point')
         self.set_point(self.point)
-        self.client=client
-        self.leg='one'
-        self.x=0
-        self.y=0
-        self.z=0
+        self.client = client
+        self.leg = 'one'
+        self.x = 0
+        self.y = 0
+        self.z = 0
         self.radioButton_one.setChecked(True)
         self.radioButton_one.toggled.connect(lambda: self.leg_point(self.radioButton_one))
         self.radioButton_two.setChecked(False)
@@ -874,92 +1137,99 @@ class calibrationWindow(QMainWindow,Ui_calibration):
         self.radioButton_six.setChecked(False)
         self.radioButton_six.toggled.connect(lambda: self.leg_point(self.radioButton_six))
         self.Button_Save.clicked.connect(self.save)
-        self.Button_X1.clicked.connect(self.X1)
-        self.Button_X2.clicked.connect(self.X2)
-        self.Button_Y1.clicked.connect(self.Y1)
-        self.Button_Y2.clicked.connect(self.Y2)
-        self.Button_Z1.clicked.connect(self.Z1)
-        self.Button_Z2.clicked.connect(self.Z2)
-    def X1(self):
+        self.Button_X1.clicked.connect(self.x1)
+        self.Button_X2.clicked.connect(self.x2)
+        self.Button_Y1.clicked.connect(self.y1)
+        self.Button_Y2.clicked.connect(self.y2)
+        self.Button_Z1.clicked.connect(self.z1)
+        self.Button_Z2.clicked.connect(self.z2)
+
+    def x1(self):
         self.get_point()
-        self.x +=1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
+        self.x += 1
+        command = cmd.CMD_CALIBRATION + '#' + self.leg + '#' + str(self.x) + '#' + str(self.y) + '#' + str(self.z) + '\n'
         self.client.send_data(command)
         self.set_point()
-    def X2(self):
+
+    def x2(self):
         self.get_point()
         self.x -= 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
+        command = cmd.CMD_CALIBRATION + '#' + self.leg + '#' + str(self.x) + '#' + str(self.y) + '#' + str(self.z) + '\n'
         self.client.send_data(command)
         self.set_point()
-    def Y1(self):
+
+    def y1(self):
         self.get_point()
         self.y += 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
+        command = cmd.CMD_CALIBRATION + '#' + self.leg + '#' + str(self.x) + '#' + str(self.y) + '#' + str(self.z) + '\n'
         self.client.send_data(command)
         self.set_point()
-    def Y2(self):
+
+    def y2(self):
         self.get_point()
         self.y -= 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
+        command = cmd.CMD_CALIBRATION + '#' + self.leg + '#' + str(self.x) + '#' + str(self.y) + '#' + str(self.z) + '\n'
         self.client.send_data(command)
         self.set_point()
-    def Z1(self):
+
+    def z1(self):
         self.get_point()
         self.z += 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
+        command = cmd.CMD_CALIBRATION + '#' + self.leg + '#' + str(self.x) + '#' + str(self.y) + '#' + str(self.z) + '\n'
         self.client.send_data(command)
         self.set_point()
-    def Z2(self):
+
+    def z2(self):
         self.get_point()
         self.z -= 1
-        command=cmd.CMD_CALIBRATION+'#'+self.leg+'#'+str(self.x)+'#'+str(self.y)+'#'+str(self.z)+'\n'
+        command = cmd.CMD_CALIBRATION + '#' + self.leg + '#' + str(self.x) + '#' + str(self.y) + '#' + str(self.z) + '\n'
         self.client.send_data(command)
         self.set_point()
-    def set_point(self,data=None):
-        if data==None:
-            if self.leg== "one":
+
+    def set_point(self, data=None):
+        if data is None:
+            if self.leg == "one":
                 self.one_x.setText(str(self.x))
                 self.one_y.setText(str(self.y))
                 self.one_z.setText(str(self.z))
-                self.point[0][0]=self.x
-                self.point[0][1]=self.y
-                self.point[0][2]=self.z
-            elif self.leg== "two":
+                self.point[0][0] = self.x
+                self.point[0][1] = self.y
+                self.point[0][2] = self.z
+            elif self.leg == "two":
                 self.two_x.setText(str(self.x))
                 self.two_y.setText(str(self.y))
                 self.two_z.setText(str(self.z))
-                self.point[1][0]=self.x
-                self.point[1][1]=self.y
-                self.point[1][2]=self.z
-            elif self.leg== "three":
+                self.point[1][0] = self.x
+                self.point[1][1] = self.y
+                self.point[1][2] = self.z
+            elif self.leg == "three":
                 self.three_x.setText(str(self.x))
                 self.three_y.setText(str(self.y))
                 self.three_z.setText(str(self.z))
-                self.point[2][0]=self.x
-                self.point[2][1]=self.y
-                self.point[2][2]=self.z
-            elif self.leg== "four":
+                self.point[2][0] = self.x
+                self.point[2][1] = self.y
+                self.point[2][2] = self.z
+            elif self.leg == "four":
                 self.four_x.setText(str(self.x))
                 self.four_y.setText(str(self.y))
                 self.four_z.setText(str(self.z))
-                self.point[3][0]=self.x
-                self.point[3][1]=self.y
-                self.point[3][2]=self.z
-            elif self.leg== "five":
+                self.point[3][0] = self.x
+                self.point[3][1] = self.y
+                self.point[3][2] = self.z
+            elif self.leg == "five":
                 self.five_x.setText(str(self.x))
                 self.five_y.setText(str(self.y))
                 self.five_z.setText(str(self.z))
-                self.point[4][0]=self.x
-                self.point[4][1]=self.y
-                self.point[4][2]=self.z
-            elif self.leg== "six":
+                self.point[4][0] = self.x
+                self.point[4][1] = self.y
+                self.point[4][2] = self.z
+            elif self.leg == "six":
                 self.six_x.setText(str(self.x))
                 self.six_y.setText(str(self.y))
                 self.six_z.setText(str(self.z))
-                self.point[5][0]=self.x
-                self.point[5][1]=self.y
-                self.point[5][2]=self.z
+                self.point[5][0] = self.x
+                self.point[5][1] = self.y
+                self.point[5][2] = self.z
         else:
             self.one_x.setText(str(data[0][0]))
             self.one_y.setText(str(data[0][1]))
@@ -979,33 +1249,35 @@ class calibrationWindow(QMainWindow,Ui_calibration):
             self.six_x.setText(str(data[5][0]))
             self.six_y.setText(str(data[5][1]))
             self.six_z.setText(str(data[5][2]))
+
     def get_point(self):
-        if self.leg== "one":
+        if self.leg == "one":
             self.x = int(self.one_x.text())
             self.y = int(self.one_y.text())
             self.z = int(self.one_z.text())
-        elif self.leg== "two":
+        elif self.leg == "two":
             self.x = int(self.two_x.text())
             self.y = int(self.two_y.text())
             self.z = int(self.two_z.text())
-        elif self.leg== "three":
+        elif self.leg == "three":
             self.x = int(self.three_x.text())
             self.y = int(self.three_y.text())
             self.z = int(self.three_z.text())
-        elif self.leg== "four":
+        elif self.leg == "four":
             self.x = int(self.four_x.text())
             self.y = int(self.four_y.text())
             self.z = int(self.four_z.text())
-        elif self.leg== "five":
+        elif self.leg == "five":
             self.x = int(self.five_x.text())
             self.y = int(self.five_y.text())
             self.z = int(self.five_z.text())
-        elif self.leg== "six":
+        elif self.leg == "six":
             self.x = int(self.six_x.text())
             self.y = int(self.six_y.text())
             self.z = int(self.six_z.text())
+
     def save(self):
-        command=cmd.CMD_CALIBRATION+'#'+'save'+'\n'
+        command = cmd.CMD_CALIBRATION + '#' + 'save' + '\n'
         self.client.send_data(command)
 
         self.point[0][0] = self.one_x.text()
@@ -1032,37 +1304,34 @@ class calibrationWindow(QMainWindow,Ui_calibration):
         self.point[5][1] = self.six_y.text()
         self.point[5][2] = self.six_z.text()
 
-        self.Save_to_txt(self.point,'point')
-        reply = QMessageBox.information(self,                        
-                                        "Message",  
-                                        "Saved successfully",  
+        self.save_to_txt(self.point, 'point')
+        reply = QMessageBox.information(self,
+                                        "Message",
+                                        "Saved successfully",
                                         QMessageBox.Yes)
-        #print(command)
-    def Read_from_txt(self,filename):
+
+    def read_from_txt(self, filename):
         file1 = open(filename + ".txt", "r")
         list_row = file1.readlines()
         list_source = []
         for i in range(len(list_row)):
-            column_list = list_row[i].strip().split("\t")
-            list_source.append(column_list)
-        for i in range(len(list_source)):
-            for j in range(len(list_source[i])):
-                list_source[i][j] = int(list_source[i][j])
+            list_source.append(list_row[i].split())
         file1.close()
         return list_source
 
-    def Save_to_txt(self,list, filename):
+    def save_to_txt(self, list, filename):
         file2 = open(filename + '.txt', 'w')
         for i in range(len(list)):
             for j in range(len(list[i])):
-                file2.write(str(list[i][j]))
-                file2.write('\t')
-            file2.write('\n')
+                if j == len(list[i]) - 1:
+                    file2.write(str(list[i][j]) + "\n")
+                else:
+                    file2.write(str(list[i][j]) + '\t')
         file2.close()
-        
-    def leg_point(self,leg):
+
+    def leg_point(self, leg):
         if leg.text() == "One":
-            if leg.isChecked() == True:
+            if leg.isChecked():
                 self.leg = "one"
         elif leg.text() == "Two":
             if leg.isChecked() == True:
@@ -1089,9 +1358,9 @@ class ColorDialog(QtWidgets.QColorDialog):
             classname = children.metaObject().className()
             if classname not in ("QColorPicker", "QColorLuminancePicker"):
                 children.hide()
-class ledWindow(QMainWindow,Ui_led):
+class LedWindow(QMainWindow,Ui_led):
     def __init__(self,client):
-        super(ledWindow,self).__init__()
+        super(LedWindow,self).__init__()
         self.setupUi(self)
         self.client = client
         self.setWindowIcon(QIcon('Picture/logo_Mini.png'))
@@ -1102,33 +1371,33 @@ class ledWindow(QMainWindow,Ui_led):
         self.dial_color.setWrapping(True)
         self.dial_color.setPageStep(10)
         self.dial_color.setNotchTarget(10)
-        self.dial_color.valueChanged.connect(self.dialValueChanged)
+        self.dial_color.valueChanged.connect(self.dial_value_changed)
         composite_2f = lambda f, g: lambda t: g(f(t))
         self.hsl_to_rgb255 = composite_2f(self.hsl_to_rgb01, self.rgb01_to_rgb255)
         self.hsl_to_rgbhex = composite_2f(self.hsl_to_rgb255, self.rgb255_to_rgbhex)
         self.rgb255_to_hsl = composite_2f(self.rgb255_to_rgb01, self.rgb01_to_hsl)
         self.rgbhex_to_hsl = composite_2f(self.rgbhex_to_rgb255, self.rgb255_to_hsl)
         self.colordialog = ColorDialog()
-        self.colordialog.currentColorChanged.connect(self.onCurrentColorChanged)
+        self.colordialog.currentColorChanged.connect(self.on_current_color_changed)
         lay = QtWidgets.QVBoxLayout(self.widget)
         lay.addWidget(self.colordialog, alignment=QtCore.Qt.AlignCenter)
 
-        self.pushButtonLightsOut.clicked.connect(self.lightsOut)
+        self.pushButtonLightsOut.clicked.connect(self.lights_out)
         self.radioButtonOne.setChecked(True)
-        self.radioButtonOne.toggled.connect(lambda: self.ledMode(self.radioButtonOne))
+        self.radioButtonOne.toggled.connect(lambda: self.led_mode(self.radioButtonOne))
         self.radioButtonTwo.setChecked(False)
-        self.radioButtonTwo.toggled.connect(lambda: self.ledMode(self.radioButtonTwo))
+        self.radioButtonTwo.toggled.connect(lambda: self.led_mode(self.radioButtonTwo))
         self.radioButtonThree.setChecked(False)
-        self.radioButtonThree.toggled.connect(lambda: self.ledMode(self.radioButtonThree))
+        self.radioButtonThree.toggled.connect(lambda: self.led_mode(self.radioButtonThree))
         self.radioButtonFour.setChecked(False)
-        self.radioButtonFour.toggled.connect(lambda: self.ledMode(self.radioButtonFour))
+        self.radioButtonFour.toggled.connect(lambda: self.led_mode(self.radioButtonFour))
         self.radioButtonFive.setChecked(False)
-        self.radioButtonFive.toggled.connect(lambda: self.ledMode(self.radioButtonFive))
+        self.radioButtonFive.toggled.connect(lambda: self.led_mode(self.radioButtonFive))
 
-    def lightsOut(self):
+    def lights_out(self):
         command = cmd.CMD_LED_MOD + '#' + '0' + '\n'
         self.client.send_data(command)
-    def ledMode(self,index):
+    def led_mode(self,index):
         if index.text() == "Mode 1":
             if index.isChecked() == True:
                 command = cmd.CMD_LED_MOD + '#' + '1' + '\n'
@@ -1149,17 +1418,17 @@ class ledWindow(QMainWindow,Ui_led):
             if index.isChecked() == True:
                 command = cmd.CMD_LED_MOD + '#' + '5' + '\n'
                 self.client.send_data(command)
-    def mode1Color(self):
+    def mode1_color(self):
         if (self.radioButtonOne.isChecked() == True) or (self.radioButtonThree.isChecked() == True):
             command = cmd.CMD_LED + '#' + str(self.rgb[0]) + '#' + str(self.rgb[1]) + '#' + str(self.rgb[2]) + '\n'
             self.client.send_data(command)
-    def onCurrentColorChanged(self, color):
+    def on_current_color_changed(self, color):
         try:
             self.rgb = self.rgbhex_to_rgb255(color.name())
             self.hsl = self.rgb255_to_hsl(self.rgb)
-            self.changeHSLText()
-            self.changeRGBText()
-            self.mode1Color()
+            self.change_hsl_text()
+            self.change_rgb_text()
+            self.mode1_color()
             self.update()
         except Exception as e:
             print(e)
@@ -1175,29 +1444,29 @@ class ledWindow(QMainWindow,Ui_led):
         except Exception as e:
             print(e)
 
-    def dialValueChanged(self):
+    def dial_value_changed(self):
         try:
             self.lineEdit_H.setText(str(self.dial_color.value()))
-            self.changeHSL()
+            self.change_hsl()
             self.hex = self.hsl_to_rgbhex((self.hsl[0], self.hsl[1], self.hsl[2]))
             self.rgb = self.rgbhex_to_rgb255(self.hex)
-            self.changeRGBText()
-            self.mode1Color()
+            self.change_rgb_text()
+            self.mode1_color()
             self.update()
         except Exception as e:
             print(e)
 
-    def changeHSL(self):
+    def change_hsl(self):
         self.hsl[0] = float(self.lineEdit_H.text())
         self.hsl[1] = float(self.lineEdit_S.text())
         self.hsl[2] = float(self.lineEdit_L.text())
 
-    def changeHSLText(self):
+    def change_hsl_text(self):
         self.lineEdit_H.setText(str(int(self.hsl[0])))
         self.lineEdit_S.setText(str(round(self.hsl[1], 1)))
         self.lineEdit_L.setText(str(round(self.hsl[2], 1)))
 
-    def changeRGBText(self):
+    def change_rgb_text(self):
         self.lineEdit_R.setText(str(self.rgb[0]))
         self.lineEdit_G.setText(str(self.rgb[1]))
         self.lineEdit_B.setText(str(self.rgb[2]))
