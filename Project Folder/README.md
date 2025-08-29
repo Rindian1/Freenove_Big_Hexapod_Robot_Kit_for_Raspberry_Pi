@@ -27,7 +27,7 @@ The client code is organized as follows:
 - `logs/` - Log files
 - `visual_evidence/` - Contains demonstration videos and screenshots 
 
-For any queries about the organisation of files, see `PROJECT STRUCTURE.md`
+For any queries about the organisation of files, see `code/client/README.md`
 
 ## Visual Evidence
 Please refer to the `visual_evidence` folder for:
